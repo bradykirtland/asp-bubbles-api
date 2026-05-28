@@ -531,14 +531,11 @@
   <header class="top">
     <div>
       <h1>Action Spa Parts — Warehouse Bubbles</h1>
-      <div class="sub">Award bubbles for picker behaviors • spreadsheet-driven</div>
+      <div class="sub">Recognize warehouse wins</div>
     </div>
   </header>
 
-  <div class="note" id="statusNote">
-    Connected to Google Sheets backend. Edits in the Sheet flow into the app on refresh.
-    Awarding bubbles requires the manager PIN.
-  </div>
+  <div class="note" id="statusNote" hidden></div>
 
   <section class="panel toolbar">
     <button class="ghost" id="refreshBtn">Refresh</button>
@@ -1471,6 +1468,8 @@ function escapeAttr(s) { return escapeHtml(s); }
 
 function setStatus(message, kind = "ok") {
   const el = $("statusNote");
+  if (!message) { el.hidden = true; return; }
+  el.hidden = false;
   el.textContent = message;
   el.style.background = kind === "error" ? "#fee2e2" : (kind === "warn" ? "#fff7ed" : "#ecfdf5");
   el.style.borderColor = kind === "error" ? "#fecaca" : (kind === "warn" ? "#fed7aa" : "#bbf7d0");
@@ -1478,7 +1477,6 @@ function setStatus(message, kind = "ok") {
 }
 
 async function fetchData() {
-  setStatus("Loading from Google Sheets…", "warn");
   try {
     const data = await apiCall("getData", { pin: session.pin });
     if (data.error) throw new Error(data.error);
@@ -1492,7 +1490,7 @@ async function fetchData() {
     state.approved   = data.approved || [];
     if (data.role) session.role = data.role;
     if (data.name) session.name = data.name;
-    setStatus("Connected — data is live from your Google Sheet. Tap Refresh to re-sync.", "ok");
+    setStatus(""); // hide the banner on success — only show on errors
     render();
   } catch (err) {
     setStatus("Couldn't load data (" + (err && err.message ? err.message : err) + ").", "error");
