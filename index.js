@@ -199,6 +199,34 @@ async function getData(pin) {
   };
 }
 
+// Public, no-PIN read for the always-on warehouse TV display (/tv).
+// Returns ONLY non-sensitive data: the leaderboard, the earn rules, and the
+// recent team activity feed. No emails, no PINs, no reward/redeem details.
+async function getPublic() {
+  const [balances, rules, activity] = await Promise.all([
+    pool.query(`
+      SELECT name AS "Name", balance AS "Balance"
+        FROM balances
+       WHERE active = true
+       ORDER BY name`),
+    pool.query(`
+      SELECT metric AS "Metric", bubbles AS "Bubbles",
+             category AS "Category", description AS "Description"
+        FROM rules WHERE active = true ORDER BY id`),
+    pool.query(`
+      SELECT a.created_at AS "Timestamp", e.name AS "Name",
+             a.metric AS "Metric", a.amount AS "Amount"
+        FROM awards a JOIN employees e ON e.id = a.employee_id
+       ORDER BY a.created_at DESC
+       LIMIT 100`),
+  ]);
+  return {
+    balances: balances.rows,
+    rules: rules.rows,
+    activity: activity.rows,
+  };
+}
+
 async function awardBubbles(pin, name, metric, amount) {
   const who = await roleForPin(pin);
   if (!who || who.role !== 'manager') return { error: 'Invalid manager PIN' };
@@ -439,18 +467,20 @@ app.use(express.text({ type: '*/*', limit: '64kb' }));
 // (matches the asp-bubbles-api GitHub repo layout). We serve only an explicit
 // allow-list so server source files (index.js, package.json) aren't exposed.
 const STATIC_FILES = [
-  'index.html', 'sw.js', 'manifest.json',
+  'index.html', 'tv.html', 'sw.js', 'manifest.json',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',
 ];
 
 function sendStatic(res, name) {
-  if (name === 'index.html' || name === 'sw.js') {
+  if (name === 'index.html' || name === 'tv.html' || name === 'sw.js') {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   }
   res.sendFile(path.join(__dirname, name));
 }
 
 app.get('/', (req, res) => sendStatic(res, 'index.html'));
+// Clean URL for the always-on warehouse TV: /tv -> tv.html
+app.get('/tv', (req, res) => sendStatic(res, 'tv.html'));
 STATIC_FILES.forEach(name => {
   app.get('/' + name, (req, res) => sendStatic(res, name));
 });
@@ -472,6 +502,7 @@ app.post('/', async (req, res) => {
     switch (action) {
       case 'login':     out = await login(body.pin); break;
       case 'getData':   out = await getData(body.pin); break;
+      case 'getPublic': out = await getPublic(); break;
       case 'award':     out = await awardBubbles(body.pin, body.name, body.metric, body.amount); break;
       case 'awardTeam': out = await awardTeam(body.pin, body.metric, body.amount); break;
       case 'undo':      out = await reverseAward(body.pin, body.name, body.metric, body.amount); break;

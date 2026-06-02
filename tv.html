@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ASP Bubbles — Warehouse Display</title>
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --border: #e5e5e0;
+    --text: #1a1a1a;
+    --muted: #6b6b6b;
+    --accent: #1e3a8a;
+    --accent-soft: #dbeafe;
+    --good: #15803d;
+    --good-soft: #dcfce7;
+    --danger: #b91c1c;
+    --danger-soft: #fee2e2;
+    --gold: #f59e0b;
+    --silver: #94a3b8;
+    --bronze: #b45309;
+    --radius: 18px;
+    --shadow-card: 0 2px 14px rgba(30,58,138,0.08), 0 1px 3px rgba(30,58,138,0.05);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font: 18px/1.5 "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;            /* TV: no scrollbars on the page itself */
+    height: 100vh;
+  }
+
+  /* Floating background bubbles (decorative, on brand) */
+  .bubbles { position: fixed; inset: 0; overflow: hidden; z-index: 0; pointer-events: none; }
+  .bubbles span {
+    position: absolute; bottom: -160px; border-radius: 50%;
+    background: radial-gradient(circle at 32% 30%, rgba(191,219,254,0.6), rgba(30,58,138,0.08));
+    animation: rise linear infinite;
+  }
+  @keyframes rise {
+    0%   { transform: translateY(0) translateX(0) scale(0.9);  opacity: 0; }
+    12%  { opacity: 1; }
+    88%  { opacity: 1; }
+    100% { transform: translateY(-118vh) translateX(30px) scale(1.15); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .bubbles { display: none; } }
+
+  /* App shell: header / scrolling content / fixed bottom nav */
+  .app { position: relative; z-index: 1; height: 100vh; display: flex; flex-direction: column; }
+
+  header.top {
+    flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: space-between; gap: 24px;
+    padding: 26px 48px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(247,247,245,0.7);
+    backdrop-filter: saturate(160%) blur(8px);
+  }
+  header.top .brand { display: flex; align-items: center; gap: 16px; }
+  header.top img { width: 56px; height: 56px; border-radius: 14px; box-shadow: var(--shadow-card); }
+  header.top h1 { font-size: 30px; font-weight: 800; margin: 0; letter-spacing: -0.02em; }
+  header.top .sub { color: var(--muted); font-size: 16px; margin-top: 2px; }
+  header.top .meta { text-align: right; color: var(--muted); font-size: 15px; line-height: 1.4; }
+  header.top .clock { font-size: 30px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .live { display: inline-flex; align-items: center; gap: 7px; }
+  .live .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 rgba(21,128,61,0.5); animation: pulse 2s infinite; }
+  .live.stale .dot { background: var(--danger); animation: none; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(21,128,61,0.5);} 70% { box-shadow: 0 0 0 8px rgba(21,128,61,0);} 100% { box-shadow: 0 0 0 0 rgba(21,128,61,0);} }
+
+  main { flex: 1 1 auto; overflow-y: auto; padding: 32px 48px 24px; }
+  main::-webkit-scrollbar { width: 10px; }
+  main::-webkit-scrollbar-thumb { background: #d4d4cf; border-radius: 8px; }
+
+  .view[hidden] { display: none; }
+  h2.section {
+    font-size: 16px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--muted); font-weight: 700; margin: 0 0 18px;
+  }
+
+  /* ---------- Leaderboard ---------- */
+  .board { display: flex; flex-direction: column; gap: 12px; }
+  .lrow {
+    display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 24px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px 28px; box-shadow: var(--shadow-card);
+  }
+  .lrow .rank {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 64px; height: 64px; border-radius: 50%;
+    font-size: 28px; font-weight: 800; background: #f0efeb; color: var(--muted);
+  }
+  .lrow.top1 { border-color: #fde68a; background: linear-gradient(90deg, #fffbeb, #ffffff 60%); }
+  .lrow.top2 { border-color: #e2e8f0; }
+  .lrow.top3 { border-color: #fed7aa; }
+  .lrow.top1 .rank { background: var(--gold); color: #fff; }
+  .lrow.top2 .rank { background: var(--silver); color: #fff; }
+  .lrow.top3 .rank { background: var(--bronze); color: #fff; }
+  .lrow .name { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+  .lrow .bal { font-size: 40px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; text-align: right; }
+  .lrow .bal small { display: block; font-size: 14px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  .lrow.top1 .name { font-size: 34px; }
+  .lrow.top1 .bal { font-size: 48px; }
+
+  /* ---------- Activity ---------- */
+  .feed { display: flex; flex-direction: column; gap: 10px; }
+  .frow {
+    display: flex; justify-content: space-between; align-items: center; gap: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px 24px; box-shadow: var(--shadow-card);
+  }
+  .frow .flabel { font-size: 22px; font-weight: 600; }
+  .frow .fdate { color: var(--muted); font-size: 15px; margin-top: 3px; }
+  .frow .famt { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .frow .famt.pos { color: var(--good); }
+  .frow .famt.neg { color: var(--danger); }
+  .frow.cancelled { opacity: 0.4; }
+  .frow.cancelled .famt { text-decoration: line-through; }
+  .reversed-tag { color: var(--muted); font-size: 15px; font-weight: 500; }
+
+  /* ---------- How to earn ---------- */
+  .earn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 24px; align-items: start; }
+  .earn-cat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 26px; box-shadow: var(--shadow-card); }
+  .earn-cat .ctitle { font-size: 15px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); font-weight: 700; margin-bottom: 14px; }
+  .earn-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
+  .earn-row:last-child { border-bottom: none; }
+  .earn-row .ename { font-size: 20px; font-weight: 600; }
+  .earn-row .edesc { color: var(--muted); font-size: 15px; margin-top: 2px; }
+  .earn-row .eval { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--good); white-space: nowrap; }
+  .earn-row .eval.neg { color: var(--danger); }
+
+  /* ---------- Empty / loading ---------- */
+  .empty { text-align: center; padding: 80px 20px; color: var(--muted); }
+  .empty h3 { color: var(--text); margin: 0 0 8px; font-size: 26px; font-weight: 700; }
+  .empty div { font-size: 18px; }
+
+  /* ---------- Bottom nav ---------- */
+  nav.tabs {
+    flex: 0 0 auto; display: flex; gap: 0;
+    background: rgba(247,247,245,0.85);
+    backdrop-filter: saturate(180%) blur(14px);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -2px 18px rgba(30,58,138,0.07);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tab {
+    flex: 1; border: none; background: none; cursor: pointer;
+    padding: 20px 8px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    font: inherit; font-size: 18px; font-weight: 600; color: var(--muted);
+    border-top: 4px solid transparent; transition: color .15s, border-color .15s, background .15s;
+  }
+  .tab .ticon { font-size: 26px; line-height: 1; }
+  .tab:hover { background: rgba(30,58,138,0.04); }
+  .tab.active { color: var(--accent); border-top-color: var(--accent); background: rgba(30,58,138,0.05); }
+</style>
+</head>
+<body>
+
+<div class="bubbles" aria-hidden="true">
+  <span style="left:4%;  width:60px; height:60px; animation-duration:24s; animation-delay:0s;"></span>
+  <span style="left:14%; width:30px; height:30px; animation-duration:17s; animation-delay:4s;"></span>
+  <span style="left:24%; width:84px; height:84px; animation-duration:30s; animation-delay:1s;"></span>
+  <span style="left:38%; width:40px; height:40px; animation-duration:20s; animation-delay:7s;"></span>
+  <span style="left:50%; width:66px; height:66px; animation-duration:26s; animation-delay:2s;"></span>
+  <span style="left:62%; width:24px; height:24px; animation-duration:15s; animation-delay:9s;"></span>
+  <span style="left:72%; width:90px; height:90px; animation-duration:32s; animation-delay:3s;"></span>
+  <span style="left:84%; width:36px; height:36px; animation-duration:19s; animation-delay:6s;"></span>
+  <span style="left:93%; width:54px; height:54px; animation-duration:23s; animation-delay:1.5s;"></span>
+</div>
+
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <img src="icon-192.png" alt="ASP Bubbles logo">
+      <div>
+        <h1>Action Spa Parts — Warehouse Bubbles</h1>
+        <div class="sub">Live leaderboard</div>
+      </div>
+    </div>
+    <div class="meta">
+      <div class="clock" id="clock">—</div>
+      <div class="live" id="livePill"><span class="dot"></span><span id="liveText">Connecting…</span></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Leaderboard -->
+    <div class="view" id="view-board">
+      <h2 class="section">Leaderboard</h2>
+      <div class="board" id="board">
+        <div class="empty"><h3>Loading…</h3><div>Fetching the latest standings.</div></div>
+      </div>
+    </div>
+
+    <!-- Activity -->
+    <div class="view" id="view-activity" hidden>
+      <h2 class="section">Recent activity</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+
+    <!-- How to earn -->
+    <div class="view" id="view-earn" hidden>
+      <h2 class="section">How to earn bubbles</h2>
+      <div class="earn-grid" id="earn"></div>
+    </div>
+  </main>
+
+  <nav class="tabs">
+    <button class="tab active" data-view="board"><span class="ticon">★</span><span>Leaderboard</span></button>
+    <button class="tab" data-view="activity"><span class="ticon">🧾</span><span>Activity</span></button>
+    <button class="tab" data-view="earn"><span class="ticon">＋</span><span>How to earn</span></button>
+  </nav>
+</div>
+
+<script>
+/* ===== Config ===== */
+// Absolute URL so this page works whether it's served from Railway (/tv) or
+// from GitHub Pages. No PIN is ever sent — this is the public read endpoint.
+const API_URL = "https://asp-bubbles-api-production.up.railway.app/";
+const REFRESH_MS = 20000;   // re-pull data every 20s
+const STALE_MS   = 70000;   // if no successful pull in this long, show "reconnecting"
+
+/* ===== State ===== */
+const state = { balances: [], rules: [], activity: [], view: "board", lastOk: 0 };
+const $ = (id) => document.getElementById(id);
+
+/* ===== Helpers ===== */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function fmtDate(ts) {
+  const d = new Date(ts);
+  if (isNaN(d)) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+    " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+function num(v) { const n = parseFloat(String(v).replace(/,/g, "")); return isNaN(n) ? 0 : n; }
+
+async function apiCall(action, params) {
+  const res = await fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(Object.assign({ action }, params || {})),
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return JSON.parse(await res.text());
+}
+
+/* ===== Rendering ===== */
+function renderBoard() {
+  const el = $("board");
+  const rows = state.balances
+    .map(b => ({ name: String(b.Name || "").trim(), balance: num(b.Balance) }))
+    .filter(b => b.name)
+    .sort((a, b) => b.balance - a.balance);
+
+  if (!rows.length) {
+    el.innerHTML = `<div class="empty"><h3>No employees yet</h3><div>Add people in the manager app to see them here.</div></div>`;
+    return;
+  }
+  el.innerHTML = rows.map((r, i) => {
+    const rank = i + 1;
+    const topClass = rank <= 3 ? ` top${rank}` : "";
+    return `
+      <div class="lrow${topClass}">
+        <span class="rank">${rank}</span>
+        <div class="name">${escapeHtml(r.name)}</div>
+        <div class="bal">${r.balance.toLocaleString()}<small>bubbles</small></div>
+      </div>`;
+  }).join("");
+}
+
+function renderActivity() {
+  const el = $("feed");
+  const items = state.activity || [];
+  if (!items.length) {
+    el.innerHTML = `<div class="empty"><h3>No activity yet</h3><div>Awards and redemptions will show up here.</div></div>`;
+    return;
+  }
+  // Match the manager view: grey out reversal ("Undo:") entries and the original
+  // award each one cancels, so an award-then-undo reads as voided.
+  const cancel = {};
+  items.forEach(a => {
+    const m = String(a.Metric || "");
+    if (m.indexOf("Undo:") === 0) {
+      const key = a.Name + "|" + m.slice(5).trim() + "|" + (-(num(a.Amount)));
+      cancel[key] = (cancel[key] || 0) + 1;
+    }
+  });
+  el.innerHTML = items.slice(0, 60).map(a => {
+    const amt = num(a.Amount);
+    const name = escapeHtml(a.Name || "");
+    const metric = String(a.Metric || "");
+    let cancelled = false;
+    if (metric.indexOf("Undo:") === 0) {
+      cancelled = true;
+    } else {
+      const key = a.Name + "|" + metric + "|" + amt;
+      if (cancel[key] > 0) { cancel[key]--; cancelled = true; }
+    }
+    let label;
+    if (metric.indexOf("Redeemed:") === 0) {
+      label = name + " redeemed " + escapeHtml(metric.replace("Redeemed:", "").trim());
+    } else if (amt < 0) {
+      label = name + " — " + (metric ? escapeHtml(metric) : "deducted");
+    } else {
+      label = name + " — " + (metric ? escapeHtml(metric) : "bubbles");
+    }
+    const tag = cancelled ? ` <span class="reversed-tag">(reversed)</span>` : "";
+    return `
+      <div class="frow${cancelled ? " cancelled" : ""}">
+        <div>
+          <div class="flabel">${label}${tag}</div>
+          <div class="fdate">${fmtDate(a.Timestamp)}</div>
+        </div>
+        <div class="famt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
+      </div>`;
+  }).join("");
+}
+
+function renderEarn() {
+  const el = $("earn");
+  const rules = (state.rules || []).map(r => ({
+    metric: String(r.Metric || "").trim(),
+    bubbles: num(r.Bubbles),
+    category: String(r.Category || "Other").trim(),
+    description: String(r.Description || "").trim(),
+  })).filter(r => r.metric);
+
+  if (!rules.length) {
+    el.innerHTML = `<div class="empty"><h3>No rules yet</h3><div>Add earning rules in the manager app.</div></div>`;
+    return;
+  }
+  const byCat = {};
+  rules.forEach(r => { (byCat[r.category] = byCat[r.category] || []).push(r); });
+  el.innerHTML = Object.keys(byCat).sort().map(cat => `
+    <div class="earn-cat">
+      <div class="ctitle">${escapeHtml(cat)}</div>
+      ${byCat[cat].map(r => `
+        <div class="earn-row">
+          <div>
+            <div class="ename">${escapeHtml(r.metric)}</div>
+            ${r.description ? `<div class="edesc">${escapeHtml(r.description)}</div>` : ""}
+          </div>
+          <div class="eval ${r.bubbles < 0 ? "neg" : ""}">${r.bubbles > 0 ? "+" : ""}${r.bubbles}</div>
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+function render() {
+  renderBoard();
+  renderActivity();
+  renderEarn();
+}
+
+/* ===== Tabs ===== */
+function switchView(view) {
+  state.view = view;
+  ["board", "activity", "earn"].forEach(v => { $("view-" + v).hidden = (v !== view); });
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  // Reset scroll position when switching tabs so the top is always visible.
+  document.querySelector("main").scrollTop = 0;
+}
+document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
+
+/* ===== Clock + live indicator ===== */
+function tick() {
+  const now = new Date();
+  $("clock").textContent = now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const pill = $("livePill");
+  if (state.lastOk && (now.getTime() - state.lastOk) > STALE_MS) {
+    pill.classList.add("stale");
+    $("liveText").textContent = "Reconnecting…";
+  }
+}
+
+/* ===== Data loop ===== */
+let loading = false;
+async function fetchData() {
+  if (loading) return;
+  loading = true;
+  try {
+    const data = await apiCall("getPublic");
+    if (data.error) throw new Error(data.error);
+    state.balances = data.balances || [];
+    state.rules    = data.rules || [];
+    state.activity = data.activity || [];
+    state.lastOk   = Date.now();
+    $("livePill").classList.remove("stale");
+    $("liveText").textContent = "Live";
+    render();
+  } catch (err) {
+    // Keep showing the last good data; the clock loop flips the pill to
+    // "Reconnecting…" once the data is too old.
+    console.warn("TV refresh failed:", err && err.message ? err.message : err);
+  } finally {
+    loading = false;
+  }
+}
+
+/* ===== Boot ===== */
+tick();
+setInterval(tick, 1000);
+fetchData();
+setInterval(fetchData, REFRESH_MS);
+</script>
+</body>
+</html>
