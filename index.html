@@ -1730,6 +1730,12 @@ function saveToken(t)  { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {
 function clearToken()  { try { localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
 function storedToken() { try { return localStorage.getItem(TOKEN_KEY); } catch (e) { return null; } }
 
+// Remember the last admin email (NOT the password) so a re-login after logout
+// only needs the password. Kept across logout on purpose.
+const EMAIL_KEY = "aspb_admin_email";
+function saveEmail(em)  { try { localStorage.setItem(EMAIL_KEY, em); } catch (e) {} }
+function storedEmail()  { try { return localStorage.getItem(EMAIL_KEY) || ""; } catch (e) { return ""; } }
+
 // On page load: if a saved admin token exists and is still valid, resume the
 // session silently (no login screen). Returns true if resumed.
 async function tryRestoreSession() {
@@ -1777,6 +1783,7 @@ async function doAdminLogin() {
     session.token = res.token;
     session.pin = null;
     saveToken(res.token);   // stay signed in across reloads
+    saveEmail(email);       // remember email for faster re-login
     enterApp(res);
   } catch (err) {
     showLoginErr("adminLoginError", "Error: " + (err && err.message ? err.message : err));
@@ -1794,6 +1801,7 @@ async function doAdminSignup() {
     session.token = res.token;
     session.pin = null;
     saveToken(res.token);   // stay signed in across reloads
+    saveEmail(email);       // remember email for faster re-login
     enterApp(res);
   } catch (err) {
     showLoginErr("adminSignupError", "Error: " + (err && err.message ? err.message : err));
@@ -2073,7 +2081,13 @@ $("loginForm").addEventListener("submit", (e) => {
 });
 
 // Login view switching + admin email/password sign-in & sign-up.
-$("toAdminLogin").addEventListener("click", () => { showLoginView("adminLogin"); $("adminLoginEmail").focus(); });
+$("toAdminLogin").addEventListener("click", () => {
+  showLoginView("adminLogin");
+  // Prefill the remembered email so only the password is needed.
+  const em = storedEmail();
+  if (em && !$("adminLoginEmail").value) $("adminLoginEmail").value = em;
+  ($("adminLoginEmail").value ? $("adminLoginPassword") : $("adminLoginEmail")).focus();
+});
 $("backToPin").addEventListener("click", () => { showLoginView("pin"); $("loginPin").focus(); });
 $("toAdminSignup").addEventListener("click", () => { showLoginView("adminSignup"); $("adminSignupName").focus(); });
 $("backToAdminLogin").addEventListener("click", () => { showLoginView("adminLogin"); });
