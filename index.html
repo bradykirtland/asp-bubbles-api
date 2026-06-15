@@ -557,6 +557,7 @@
       <div style="font-weight:700; font-size:20px; letter-spacing:-0.02em; margin-top:14px;">ASP Bubbles</div>
       <div class="muted" style="font-size:13px; margin-top:2px;">Warehouse rewards</div>
     </div>
+    <!-- Employee PIN view (default) -->
     <form class="dbody" id="loginForm" style="display:flex; flex-direction:column; gap:12px; padding-top:8px;">
       <p class="muted" style="margin:0; font-size:13px; text-align:center;">
         Enter your PIN to sign in.
@@ -566,6 +567,36 @@
              style="font-size:24px; padding:14px; letter-spacing:0.4em; text-align:center; font-family:inherit;">
       <div id="loginError" style="color: var(--danger); font-size:13px; display:none; text-align:center;"></div>
       <button type="submit" class="primary" style="padding:13px; font-size:15px; font-weight:600;">Sign in</button>
+      <button type="button" class="ghost" id="toAdminLogin" style="padding:10px; font-size:13px;">Admin sign in</button>
+    </form>
+
+    <!-- Admin email + password view -->
+    <form class="dbody" id="adminLoginForm" hidden style="display:flex; flex-direction:column; gap:12px; padding-top:8px;">
+      <p class="muted" style="margin:0; font-size:13px; text-align:center;">Admin sign in</p>
+      <input type="email" id="adminLoginEmail" placeholder="Email" autocomplete="username"
+             style="font-size:16px; padding:12px; font-family:inherit;">
+      <input type="password" id="adminLoginPassword" placeholder="Password" autocomplete="current-password"
+             style="font-size:16px; padding:12px; font-family:inherit;">
+      <div id="adminLoginError" style="color: var(--danger); font-size:13px; display:none; text-align:center;"></div>
+      <button type="submit" class="primary" style="padding:13px; font-size:15px; font-weight:600;">Sign in</button>
+      <div style="display:flex; justify-content:space-between; gap:8px;">
+        <button type="button" class="ghost" id="backToPin" style="padding:9px 12px; font-size:13px;">← Use a PIN</button>
+        <button type="button" class="ghost" id="toAdminSignup" style="padding:9px 12px; font-size:13px;">Create an account</button>
+      </div>
+    </form>
+
+    <!-- Create admin account view -->
+    <form class="dbody" id="adminSignupForm" hidden style="display:flex; flex-direction:column; gap:12px; padding-top:8px;">
+      <p class="muted" style="margin:0; font-size:13px; text-align:center;">Create an admin account</p>
+      <input type="text" id="adminSignupName" placeholder="Your name" autocomplete="name"
+             style="font-size:16px; padding:12px; font-family:inherit;">
+      <input type="email" id="adminSignupEmail" placeholder="Email" autocomplete="email"
+             style="font-size:16px; padding:12px; font-family:inherit;">
+      <input type="password" id="adminSignupPassword" placeholder="Password (8+ characters)" autocomplete="new-password"
+             style="font-size:16px; padding:12px; font-family:inherit;">
+      <div id="adminSignupError" style="color: var(--danger); font-size:13px; display:none; text-align:center;"></div>
+      <button type="submit" class="primary" style="padding:13px; font-size:15px; font-weight:600;">Create account</button>
+      <button type="button" class="ghost" id="backToAdminLogin" style="padding:9px 12px; font-size:13px;">← Back</button>
     </form>
   </div>
 </div>
@@ -737,6 +768,7 @@
         <button class="atab active" data-atab="rules">Earn rules</button>
         <button class="atab" data-atab="rewards">Rewards</button>
         <button class="atab" data-atab="people">People</button>
+        <button class="atab" data-atab="admins">Admins</button>
       </div>
       <div id="adminError" style="display:none; background:var(--danger-soft); border:1px solid #fecaca; color:#7f1d1d; border-radius:8px; padding:8px 12px; font-size:13px; margin-bottom:12px;"></div>
 
@@ -797,6 +829,23 @@
         </div>
         <div class="alist" id="empAdminList"></div>
       </div>
+
+      <!-- Admins (email + password accounts) -->
+      <div class="asec" id="asec-admins" hidden>
+        <button class="primary admin-add-btn" id="adminAddBtn">＋ Add an admin</button>
+        <div class="admin-form" id="adminForm" hidden>
+          <div class="ftitle" id="adminFormTitle">New admin</div>
+          <input type="hidden" id="adminFormId">
+          <div class="field"><label>Name</label><input type="text" id="adminFormName" placeholder="e.g. Julio"></div>
+          <div class="field"><label>Email</label><input type="email" id="adminFormEmail" placeholder="name@example.com"></div>
+          <div class="field"><label id="adminFormPwLabel">Password (8+ characters)</label><input type="password" id="adminFormPassword" placeholder="Password" autocomplete="new-password"></div>
+          <div class="formbtns">
+            <button class="ghost" id="adminFormCancel">Cancel</button>
+            <button class="primary" id="adminFormSave">Save</button>
+          </div>
+        </div>
+        <div class="alist" id="adminAdminList"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -811,10 +860,14 @@ const API_URL = "/";
 // POST a JSON action to the Apps Script backend. text/plain avoids a CORS
 // preflight (which Apps Script can't answer). Returns the parsed JSON object.
 async function apiCall(action, params) {
+  const payload = Object.assign({ action: action }, params || {});
+  // Admins authenticate with a session token; attach it automatically so every
+  // action carries it. (Employees / break-glass pass their PIN explicitly.)
+  if (session.token && payload.token === undefined) payload.token = session.token;
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(Object.assign({ action: action }, params || {})),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error("HTTP " + res.status);
   return JSON.parse(await res.text());
@@ -875,7 +928,7 @@ const state = {
   view: "balances", // balances | rewards | earn
   pendingRedeem: null, // reward awaiting confirm
   pendingTeam: null,   // {metric, amount} awaiting team-award confirm
-  admin: { rules: [], rewards: [], employees: [], tab: "rules" }, // manager admin screens
+  admin: { rules: [], rewards: [], employees: [], admins: [], tab: "rules" }, // manager admin screens
 };
 
 function normalizeCatalog(rows) {
@@ -1300,7 +1353,7 @@ function renderActivity() {
         <div class="txn-row${cancelled ? " cancelled" : ""}">
           <div>
             <div class="tlabel">${label}${tag}</div>
-            <div class="tdate">${fmtDate(a.Timestamp)}</div>
+            <div class="tdate">${fmtDate(a.Timestamp)}${a.By ? " · by " + escapeHtml(a.By) : ""}</div>
           </div>
           <div class="tamt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
         </div>`;
@@ -1625,13 +1678,13 @@ async function fetchData() {
 
 /* ---------- Session / login ---------- */
 
-const session = { pin: null, role: null, name: null };
+const session = { pin: null, token: null, role: null, name: null };
 
 function updateIdentityUi() {
   const el = $("identity");
   $("manageBtn").hidden = (session.role !== "manager");
   if (session.role === "manager") {
-    el.textContent = "Manager";
+    el.textContent = session.name || "Manager";   // admin's name, or "Manager" for break-glass PIN
     return;
   }
   const me = state.employees.find(e => e.name === session.name);
@@ -1639,45 +1692,91 @@ function updateIdentityUi() {
   el.innerHTML = escapeHtml(session.name || "Signed in") + balText;
 }
 
+// Show one of the three login cards: "pin" | "adminLogin" | "adminSignup".
+function showLoginView(which) {
+  $("loginForm").hidden = which !== "pin";
+  $("adminLoginForm").hidden = which !== "adminLogin";
+  $("adminSignupForm").hidden = which !== "adminSignup";
+  ["loginError", "adminLoginError", "adminSignupError"].forEach(id => { $(id).style.display = "none"; });
+}
+
+function showLoginErr(id, msg) {
+  const el = $(id);
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+// Shared: a successful sign-in (any method) sets the session and opens the app.
+function enterApp(res) {
+  session.role = res.role;
+  session.name = res.name;
+  $("loginOverlay").hidden = true;
+  document.body.classList.remove("pre-auth");
+  updateIdentityUi();
+  switchView("balances");
+  fetchData();
+}
+
 async function doLogin(pin) {
-  const errEl = $("loginError");
-  errEl.style.display = "none";
   pin = String(pin || "").trim();
-  if (!pin) {
-    errEl.textContent = "Enter your PIN.";
-    errEl.style.display = "block";
-    return;
-  }
+  if (!pin) { showLoginErr("loginError", "Enter your PIN."); return; }
   try {
     const res = await apiCall("login", { pin: pin });
-    if (res.error) {
-      errEl.textContent = res.error;
-      errEl.style.display = "block";
-      return;
-    }
+    if (res.error) { showLoginErr("loginError", res.error); return; }
     session.pin = pin;
-    session.role = res.role;
-    session.name = res.name;
-    $("loginOverlay").hidden = true;
-    document.body.classList.remove("pre-auth");
-    updateIdentityUi();
-    switchView("balances");
-    fetchData();
+    session.token = null;
+    enterApp(res);
   } catch (err) {
-    errEl.textContent = "Error: " + (err && err.message ? err.message : err);
-    errEl.style.display = "block";
+    showLoginErr("loginError", "Error: " + (err && err.message ? err.message : err));
+  }
+}
+
+async function doAdminLogin() {
+  const email = $("adminLoginEmail").value.trim();
+  const password = $("adminLoginPassword").value;
+  if (!email || !password) { showLoginErr("adminLoginError", "Enter your email and password."); return; }
+  try {
+    const res = await apiCall("adminLogin", { email: email, password: password });
+    if (res.error) { showLoginErr("adminLoginError", res.error); return; }
+    session.token = res.token;
+    session.pin = null;
+    enterApp(res);
+  } catch (err) {
+    showLoginErr("adminLoginError", "Error: " + (err && err.message ? err.message : err));
+  }
+}
+
+async function doAdminSignup() {
+  const name = $("adminSignupName").value.trim();
+  const email = $("adminSignupEmail").value.trim();
+  const password = $("adminSignupPassword").value;
+  if (!name || !email || !password) { showLoginErr("adminSignupError", "Fill in your name, email, and password."); return; }
+  try {
+    const res = await apiCall("adminSignup", { name: name, email: email, password: password });
+    if (res.error) { showLoginErr("adminSignupError", res.error); return; }
+    session.token = res.token;
+    session.pin = null;
+    enterApp(res);
+  } catch (err) {
+    showLoginErr("adminSignupError", "Error: " + (err && err.message ? err.message : err));
   }
 }
 
 function logout() {
+  // Best-effort: tell the server to drop this admin session token.
+  if (session.token) apiCall("adminLogout", { token: session.token }).catch(() => {});
   session.pin = null;
+  session.token = null;
   session.role = null;
   session.name = null;
   state.employees = [];
   state.log = [];
   $("loginPin").value = "";
+  ["adminLoginEmail", "adminLoginPassword", "adminSignupName", "adminSignupEmail", "adminSignupPassword"]
+    .forEach(id => { $(id).value = ""; });
   $("adminModal").hidden = true;
   $("manageBtn").hidden = true;
+  showLoginView("pin");
   $("loginOverlay").hidden = false;
   document.body.classList.add("pre-auth");
 }
@@ -1695,6 +1794,7 @@ function hideAdminForms() {
   $("ruleForm").hidden = true;
   $("rewardForm").hidden = true;
   $("empForm").hidden = true;
+  $("adminForm").hidden = true;
 }
 
 async function openAdmin() {
@@ -1707,11 +1807,15 @@ async function openAdmin() {
 
 async function loadAdmin() {
   try {
-    const data = await apiCall("getAdmin", { pin: session.pin });
+    const [data, adminsRes] = await Promise.all([
+      apiCall("getAdmin", { pin: session.pin }),
+      apiCall("listAdmins", { pin: session.pin }),
+    ]);
     if (data.error) { adminError(data.error); return; }
     state.admin.rules = data.rules || [];
     state.admin.rewards = data.rewards || [];
     state.admin.employees = data.employees || [];
+    state.admin.admins = (adminsRes && adminsRes.admins) || [];
     renderAdmin();
   } catch (err) {
     adminError("Couldn't load: " + (err && err.message ? err.message : err));
@@ -1720,7 +1824,7 @@ async function loadAdmin() {
 
 function switchAdminTab(tab) {
   state.admin.tab = tab;
-  ["rules", "rewards", "people"].forEach(t => { $("asec-" + t).hidden = (t !== tab); });
+  ["rules", "rewards", "people", "admins"].forEach(t => { $("asec-" + t).hidden = (t !== tab); });
   document.querySelectorAll(".atab").forEach(b => b.classList.toggle("active", b.dataset.atab === tab));
   adminError("");
   hideAdminForms();
@@ -1745,6 +1849,7 @@ function renderAdmin() {
   renderRuleAdmin();
   renderRewardAdmin();
   renderEmpAdmin();
+  renderAdminAdmin();
 }
 
 // ----- Rules -----
@@ -1881,12 +1986,60 @@ async function saveEmp() {
   await adminSave(payload.id ? "updateEmployee" : "addEmployee", { employee: payload });
 }
 
+// ----- Admins (email + password accounts) -----
+function renderAdminAdmin() {
+  const el = $("adminAdminList");
+  const admins = state.admin.admins;
+  if (!admins.length) { el.innerHTML = `<div class="muted" style="font-size:13px;">No admin accounts yet.</div>`; return; }
+  el.innerHTML = admins.map(a => `
+      <div class="arow ${a.active ? "" : "inactive"}">
+        <div class="ainfo">
+          <div class="atitle">${escapeHtml(a.name)}${a.active ? "" : `<span class="badge off">Off</span>`}</div>
+          <div class="asub">${escapeHtml(a.email)}</div>
+        </div>
+        <div class="aactions">
+          <button class="ghost" data-edit="${a.id}">Edit</button>
+          <button class="ghost" data-toggle="${a.id}" data-active="${a.active ? 0 : 1}">${a.active ? "Deactivate" : "Reactivate"}</button>
+        </div>
+      </div>`).join("");
+  el.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => editAdmin(parseInt(b.dataset.edit, 10))));
+  el.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", () => adminSave("setAdminActive", { id: parseInt(b.dataset.toggle, 10), active: b.dataset.active === "1" })));
+}
+function showAdminForm(a) {
+  $("adminFormTitle").textContent = a ? "Edit admin" : "New admin";
+  $("adminFormId").value = a ? a.id : "";
+  $("adminFormName").value = a ? a.name : "";
+  $("adminFormEmail").value = a ? a.email : "";
+  $("adminFormPassword").value = "";
+  $("adminFormPwLabel").textContent = a ? "New password (blank = keep current)" : "Password (8+ characters)";
+  adminError("");
+  $("adminForm").hidden = false;
+}
+function editAdmin(id) { const a = state.admin.admins.find(x => x.id === id); if (a) showAdminForm(a); }
+async function saveAdmin() {
+  const payload = {
+    id: $("adminFormId").value || undefined,
+    name: $("adminFormName").value,
+    email: $("adminFormEmail").value,
+    password: $("adminFormPassword").value,
+  };
+  await adminSave(payload.id ? "updateAdmin" : "addAdmin", { admin: payload });
+}
+
 /* ---------- Event wiring ---------- */
 
 $("loginForm").addEventListener("submit", (e) => {
   e.preventDefault();
   doLogin($("loginPin").value);
 });
+
+// Login view switching + admin email/password sign-in & sign-up.
+$("toAdminLogin").addEventListener("click", () => { showLoginView("adminLogin"); $("adminLoginEmail").focus(); });
+$("backToPin").addEventListener("click", () => { showLoginView("pin"); $("loginPin").focus(); });
+$("toAdminSignup").addEventListener("click", () => { showLoginView("adminSignup"); $("adminSignupName").focus(); });
+$("backToAdminLogin").addEventListener("click", () => { showLoginView("adminLogin"); });
+$("adminLoginForm").addEventListener("submit", (e) => { e.preventDefault(); doAdminLogin(); });
+$("adminSignupForm").addEventListener("submit", (e) => { e.preventDefault(); doAdminSignup(); });
 
 $("logoutBtn").addEventListener("click", logout);
 
@@ -1929,6 +2082,9 @@ $("rewardSave").addEventListener("click", saveReward);
 $("empAddBtn").addEventListener("click", () => showEmpForm(null));
 $("empCancel").addEventListener("click", () => { $("empForm").hidden = true; adminError(""); });
 $("empSave").addEventListener("click", saveEmp);
+$("adminAddBtn").addEventListener("click", () => showAdminForm(null));
+$("adminFormCancel").addEventListener("click", () => { $("adminForm").hidden = true; adminError(""); });
+$("adminFormSave").addEventListener("click", saveAdmin);
 
 // Start at the login screen; focus the PIN field. No data loads until login.
 setTimeout(() => $("loginPin").focus(), 100);

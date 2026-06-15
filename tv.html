@@ -319,7 +319,7 @@ function renderActivity() {
       <div class="frow${cancelled ? " cancelled" : ""}">
         <div>
           <div class="flabel">${label}${tag}</div>
-          <div class="fdate">${fmtDate(a.Timestamp)}</div>
+          <div class="fdate">${fmtDate(a.Timestamp)}${a.By ? " · by " + escapeHtml(a.By) : ""}</div>
         </div>
         <div class="famt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
       </div>`;

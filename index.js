@@ -13,6 +13,7 @@ import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import path from 'path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,17 +60,32 @@ async function ensureSchema() {
     await pool.query(`UPDATE rules SET team_wide = true WHERE description ILIKE '%whole team%'`);
     console.log('Schema: added rules.team_wide and backfilled from descriptions.');
   }
+
+  // Admin accounts (email + password) and their login sessions. Created on
+  // first boot after this deploy; safe to run every time (IF NOT EXISTS).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admins (
+      id         SERIAL PRIMARY KEY,
+      name       TEXT NOT NULL,
+      email      TEXT NOT NULL UNIQUE,
+      pw_salt    TEXT NOT NULL,
+      pw_hash    TEXT NOT NULL,
+      active     BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      token      TEXT PRIMARY KEY,
+      admin_id   INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS admin_sessions_admin_idx ON admin_sessions(admin_id)`);
 }
 
 // =================================================================
 // Helpers
 // =================================================================
-
-// Manager-only gate for admin actions. Returns the manager identity or null.
-async function requireManager(pin) {
-  const who = await roleForPin(pin);
-  return (who && who.role === 'manager') ? who : null;
-}
 
 // Parse a whole number (allowing negatives). Returns null if not an integer.
 function cleanInt(v) {
@@ -84,6 +100,70 @@ function cleanPin(v) {
   const p = String(v == null ? '' : v).trim();
   return /^\d{4,6}$/.test(p) ? p : null;
 }
+
+// ---------- Admin password + session helpers ----------
+
+const SESSION_DAYS = 30;        // how long an admin stays signed in
+const MIN_PASSWORD = 8;         // minimum admin password length
+
+function normalizeEmail(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
+function validEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+
+// Hash a password with a per-user random salt (scrypt). Returns {salt, hash}.
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(pw), salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+// Constant-time verify of a password against a stored salt+hash.
+function verifyPassword(pw, salt, hash) {
+  try {
+    const calc = crypto.scryptSync(String(pw), salt, 64);
+    const stored = Buffer.from(String(hash), 'hex');
+    return calc.length === stored.length && crypto.timingSafeEqual(calc, stored);
+  } catch {
+    return false;
+  }
+}
+
+function newSessionToken() { return crypto.randomUUID() + crypto.randomBytes(16).toString('hex'); }
+
+// Create a login session for an admin and return its token.
+async function createSession(adminId) {
+  const token = newSessionToken();
+  await pool.query(
+    `INSERT INTO admin_sessions (token, admin_id, expires_at)
+     VALUES ($1, $2, now() + ($3 || ' days')::interval)`,
+    [token, adminId, String(SESSION_DAYS)]
+  );
+  return token;
+}
+
+// Resolve a session token to an active admin, or null. Also drops stale rows.
+async function adminForToken(token) {
+  const t = String(token == null ? '' : token).trim();
+  if (!t) return null;
+  const { rows } = await pool.query(
+    `SELECT a.id, a.name
+       FROM admin_sessions s JOIN admins a ON a.id = s.admin_id
+      WHERE s.token = $1 AND s.expires_at > now() AND a.active = true
+      LIMIT 1`,
+    [t]
+  );
+  return rows.length ? { id: rows[0].id, name: rows[0].name } : null;
+}
+
+// Unified auth for every action. Prefers an admin session token; falls back to
+// the PIN path (employee, or the break-glass MANAGER_PIN). Returns an identity
+// { role, name, adminId? } or null.
+async function resolveAuth(body) {
+  const admin = await adminForToken(body && body.token);
+  if (admin) return { role: 'manager', name: admin.name, adminId: admin.id };
+  return roleForPin(body && body.pin);
+}
+
+function isManager(who) { return !!(who && who.role === 'manager'); }
 
 async function roleForPin(pin) {
   const p = String(pin == null ? '' : pin).trim();
@@ -164,8 +244,7 @@ async function login(pin) {
   return r || { error: 'Invalid PIN' };
 }
 
-async function getData(pin) {
-  const who = await roleForPin(pin);
+async function getData(who) {
   if (!who) return { error: 'Not authorized' };
   const isManager = who.role === 'manager';
 
@@ -187,7 +266,7 @@ async function getData(pin) {
         FROM rewards WHERE active = true ORDER BY id`),
     pool.query(`
       SELECT a.created_at AS "Timestamp", e.name AS "Name",
-             a.metric AS "Metric", a.amount AS "Amount"
+             a.metric AS "Metric", a.amount AS "Amount", a.awarded_by AS "By"
         FROM awards a JOIN employees e ON e.id = a.employee_id
        WHERE e.name = $1
        ORDER BY a.created_at DESC
@@ -218,7 +297,7 @@ async function getData(pin) {
     isManager
       ? pool.query(`
           SELECT a.created_at AS "Timestamp", e.name AS "Name",
-                 a.metric AS "Metric", a.amount AS "Amount"
+                 a.metric AS "Metric", a.amount AS "Amount", a.awarded_by AS "By"
             FROM awards a JOIN employees e ON e.id = a.employee_id
            ORDER BY a.created_at DESC
            LIMIT 500`)
@@ -255,7 +334,7 @@ async function getPublic() {
         FROM rules WHERE active = true ORDER BY id`),
     pool.query(`
       SELECT a.created_at AS "Timestamp", e.name AS "Name",
-             a.metric AS "Metric", a.amount AS "Amount"
+             a.metric AS "Metric", a.amount AS "Amount", a.awarded_by AS "By"
         FROM awards a JOIN employees e ON e.id = a.employee_id
        ORDER BY a.created_at DESC
        LIMIT 100`),
@@ -267,9 +346,8 @@ async function getPublic() {
   };
 }
 
-async function awardBubbles(pin, name, metric, amount) {
-  const who = await roleForPin(pin);
-  if (!who || who.role !== 'manager') return { error: 'Invalid manager PIN' };
+async function awardBubbles(who, name, metric, amount) {
+  if (!isManager(who)) return { error: 'Invalid manager PIN' };
   if (!name || typeof amount !== 'number') return { error: 'Missing name or amount' };
 
   const { rows } = await pool.query('SELECT id FROM employees WHERE name = $1', [name]);
@@ -277,7 +355,7 @@ async function awardBubbles(pin, name, metric, amount) {
 
   await pool.query(
     'INSERT INTO awards (employee_id, metric, amount, awarded_by) VALUES ($1, $2, $3, $4)',
-    [rows[0].id, metric || '', amount, 'Manager']
+    [rows[0].id, metric || '', amount, who.name]
   );
 
   const bal = await balanceFor(name);
@@ -297,18 +375,17 @@ async function awardBubbles(pin, name, metric, amount) {
   return { ok: true };
 }
 
-async function awardTeam(pin, metric, amount) {
-  const who = await roleForPin(pin);
-  if (!who || who.role !== 'manager') return { error: 'Invalid manager PIN' };
+async function awardTeam(who, metric, amount) {
+  if (!isManager(who)) return { error: 'Invalid manager PIN' };
   if (typeof amount !== 'number') return { error: 'Missing amount' };
 
   // One INSERT writes a row per active employee.
   const ins = await pool.query(
     `INSERT INTO awards (employee_id, metric, amount, awarded_by, note)
-     SELECT id, $1, $2, 'Manager', 'Whole-team award'
+     SELECT id, $1, $2, $3, 'Whole-team award'
        FROM employees WHERE active = true
      RETURNING employee_id`,
-    [metric || '', amount]
+    [metric || '', amount, who.name]
   );
 
   const { rows: emps } = await pool.query(
@@ -335,9 +412,8 @@ async function awardTeam(pin, metric, amount) {
   return { ok: true, count: ins.rowCount };
 }
 
-async function reverseAward(pin, name, metric, amount) {
-  const who = await roleForPin(pin);
-  if (!who || who.role !== 'manager') return { error: 'Invalid manager PIN' };
+async function reverseAward(who, name, metric, amount) {
+  if (!isManager(who)) return { error: 'Invalid manager PIN' };
   if (!name || typeof amount !== 'number') return { error: 'Missing name or amount' };
 
   const client = await pool.connect();
@@ -358,9 +434,9 @@ async function reverseAward(pin, name, metric, amount) {
     // Insert the reversal row.
     const { rows: rev } = await client.query(
       `INSERT INTO awards (employee_id, metric, amount, awarded_by, note)
-       VALUES ($1, $2, $3, 'Manager', 'Reversal')
+       VALUES ($1, $2, $3, $4, 'Reversal')
        RETURNING id`,
-      [employeeId, 'Undo: ' + (metric || ''), -amount]
+      [employeeId, 'Undo: ' + (metric || ''), -amount, who.name]
     );
     const reversalId = rev[0].id;
 
@@ -388,8 +464,7 @@ async function reverseAward(pin, name, metric, amount) {
   return { ok: true };
 }
 
-async function requestRedemption(pin, rewardName) {
-  const who = await roleForPin(pin);
+async function requestRedemption(who, rewardName) {
   if (!who) return { error: 'Not authorized' };
   if (who.role !== 'employee') return { error: 'Only employees can redeem' };
 
@@ -419,9 +494,8 @@ async function requestRedemption(pin, rewardName) {
   return { ok: true };
 }
 
-async function resolveRedemption(pin, redemptionId, approve) {
-  const who = await roleForPin(pin);
-  if (!who || who.role !== 'manager') return { error: 'Manager only' };
+async function resolveRedemption(who, redemptionId, approve) {
+  if (!isManager(who)) return { error: 'Manager only' };
 
   const client = await pool.connect();
   try {
@@ -448,12 +522,12 @@ async function resolveRedemption(pin, redemptionId, approve) {
       }
       await client.query(
         `INSERT INTO awards (employee_id, metric, amount, awarded_by, note)
-         VALUES ($1, $2, $3, 'Manager', 'Redemption')`,
-        [r.employee_id, 'Redeemed: ' + r.reward_name, -r.cost]
+         VALUES ($1, $2, $3, $4, 'Redemption')`,
+        [r.employee_id, 'Redeemed: ' + r.reward_name, -r.cost, who.name]
       );
       await client.query(
-        `UPDATE redemptions SET status = 'approved', resolved_at = now(), approved_by = 'Manager' WHERE id = $1`,
-        [r.id]
+        `UPDATE redemptions SET status = 'approved', resolved_at = now(), approved_by = $2 WHERE id = $1`,
+        [r.id, who.name]
       );
       await client.query('COMMIT');
       const newBal = await balanceFor(r.employee_name);
@@ -474,9 +548,8 @@ async function resolveRedemption(pin, redemptionId, approve) {
   }
 }
 
-async function fulfillRedemption(pin, redemptionId) {
-  const who = await roleForPin(pin);
-  if (!who || who.role !== 'manager') return { error: 'Manager only' };
+async function fulfillRedemption(who, redemptionId) {
+  if (!isManager(who)) return { error: 'Manager only' };
 
   const { rows } = await pool.query(
     `UPDATE redemptions SET status = 'fulfilled', resolved_at = now()
@@ -500,8 +573,8 @@ async function fulfillRedemption(pin, redemptionId) {
 // Full lists for the manager admin screens, including INACTIVE rows so the
 // manager can turn things back on. Includes employee PINs (the manager needs
 // them to onboard/remind staff).
-async function getAdmin(pin) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function getAdmin(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
   const [rules, rewards, employees] = await Promise.all([
     pool.query(`
       SELECT id, metric, bubbles, category, description,
@@ -521,8 +594,8 @@ async function getAdmin(pin) {
 
 // ---------- Rules ----------
 
-async function addRule(pin, r) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function addRule(who, r) {
+  if (!isManager(who)) return { error: 'Manager only' };
   r = r || {};
   const metric = String(r.metric || '').trim();
   const bubbles = cleanInt(r.bubbles);
@@ -537,8 +610,8 @@ async function addRule(pin, r) {
   return { ok: true };
 }
 
-async function updateRule(pin, r) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function updateRule(who, r) {
+  if (!isManager(who)) return { error: 'Manager only' };
   r = r || {};
   const id = cleanInt(r.id);
   const metric = String(r.metric || '').trim();
@@ -555,8 +628,8 @@ async function updateRule(pin, r) {
   return { ok: true };
 }
 
-async function setRuleActive(pin, id, active) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function setRuleActive(who, id, active) {
+  if (!isManager(who)) return { error: 'Manager only' };
   const rid = cleanInt(id);
   if (rid === null) return { error: 'Bad rule id' };
   await pool.query(`UPDATE rules SET active=$1 WHERE id=$2`, [!!active, rid]);
@@ -565,8 +638,8 @@ async function setRuleActive(pin, id, active) {
 
 // ---------- Rewards ----------
 
-async function addReward(pin, r) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function addReward(who, r) {
+  if (!isManager(who)) return { error: 'Manager only' };
   r = r || {};
   const name = String(r.name || '').trim();
   const cost = cleanInt(r.cost);
@@ -579,8 +652,8 @@ async function addReward(pin, r) {
   return { ok: true };
 }
 
-async function updateReward(pin, r) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function updateReward(who, r) {
+  if (!isManager(who)) return { error: 'Manager only' };
   r = r || {};
   const id = cleanInt(r.id);
   const name = String(r.name || '').trim();
@@ -596,8 +669,8 @@ async function updateReward(pin, r) {
   return { ok: true };
 }
 
-async function setRewardActive(pin, id, active) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function setRewardActive(who, id, active) {
+  if (!isManager(who)) return { error: 'Manager only' };
   const rid = cleanInt(id);
   if (rid === null) return { error: 'Bad reward id' };
   await pool.query(`UPDATE rewards SET active=$1 WHERE id=$2`, [!!active, rid]);
@@ -606,8 +679,8 @@ async function setRewardActive(pin, id, active) {
 
 // ---------- Employees ----------
 
-async function addEmployee(pin, e) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function addEmployee(who, e) {
+  if (!isManager(who)) return { error: 'Manager only' };
   e = e || {};
   const name = String(e.name || '').trim();
   if (!name) return { error: 'Name is required' };
@@ -637,8 +710,8 @@ async function addEmployee(pin, e) {
   return { ok: true };
 }
 
-async function updateEmployee(pin, e) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function updateEmployee(who, e) {
+  if (!isManager(who)) return { error: 'Manager only' };
   e = e || {};
   const id = cleanInt(e.id);
   if (id === null) return { error: 'Bad employee id' };
@@ -675,11 +748,116 @@ async function updateEmployee(pin, e) {
   return { ok: true };
 }
 
-async function setEmployeeActive(pin, id, active) {
-  if (!await requireManager(pin)) return { error: 'Manager only' };
+async function setEmployeeActive(who, id, active) {
+  if (!isManager(who)) return { error: 'Manager only' };
   const eid = cleanInt(id);
   if (eid === null) return { error: 'Bad employee id' };
   await pool.query(`UPDATE employees SET active=$1 WHERE id=$2`, [!!active, eid]);
+  return { ok: true };
+}
+
+// ---------- Admin accounts (login / signup / management) ----------
+
+// Shared create path used by both public self-signup and manager "add admin".
+// Returns { id, name } on success or { error } on failure.
+async function createAdminRow(name, email, password) {
+  const nm = String(name || '').trim();
+  const em = normalizeEmail(email);
+  const pw = String(password == null ? '' : password);
+  if (!nm) return { error: 'Name is required' };
+  if (!validEmail(em)) return { error: 'Enter a valid email address' };
+  if (pw.length < MIN_PASSWORD) return { error: `Password must be at least ${MIN_PASSWORD} characters` };
+  const dup = await pool.query('SELECT 1 FROM admins WHERE lower(email) = $1', [em]);
+  if (dup.rows.length) return { error: 'An admin with that email already exists' };
+  const { salt, hash } = hashPassword(pw);
+  const { rows } = await pool.query(
+    `INSERT INTO admins (name, email, pw_salt, pw_hash) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [nm, em, salt, hash]
+  );
+  return { id: rows[0].id, name: nm };
+}
+
+// Public self-service signup. (Per the chosen "anyone, anytime" policy. To lock
+// this down later, require a valid Manager PIN here:
+//   if (String(body.managerPin) !== String(MANAGER_PIN)) return { error: 'Wrong Manager PIN' };
+// and add a Manager-PIN field to the create-account form.)
+async function adminSignup(body) {
+  body = body || {};
+  const res = await createAdminRow(body.name, body.email, body.password);
+  if (res.error) return res;
+  const token = await createSession(res.id);
+  return { role: 'manager', name: res.name, token };
+}
+
+async function adminLogin(body) {
+  body = body || {};
+  const em = normalizeEmail(body.email);
+  const pw = String(body.password == null ? '' : body.password);
+  if (!em || !pw) return { error: 'Enter your email and password' };
+  const { rows } = await pool.query(
+    'SELECT id, name, pw_salt, pw_hash, active FROM admins WHERE lower(email) = $1 LIMIT 1', [em]);
+  const a = rows[0];
+  if (!a || !a.active || !verifyPassword(pw, a.pw_salt, a.pw_hash)) {
+    return { error: 'Invalid email or password' };   // generic — no account enumeration
+  }
+  const token = await createSession(a.id);
+  return { role: 'manager', name: a.name, token };
+}
+
+async function adminLogout(body) {
+  const t = String((body && body.token) || '').trim();
+  if (t) await pool.query('DELETE FROM admin_sessions WHERE token = $1', [t]);
+  return { ok: true };
+}
+
+async function listAdmins(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const { rows } = await pool.query(
+    `SELECT id, name, email, active FROM admins ORDER BY active DESC, name`);
+  return { admins: rows };
+}
+
+async function addAdmin(who, a) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const res = await createAdminRow((a || {}).name, (a || {}).email, (a || {}).password);
+  return res.error ? res : { ok: true };
+}
+
+async function updateAdmin(who, a) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  a = a || {};
+  const id = cleanInt(a.id);
+  if (id === null) return { error: 'Bad admin id' };
+  const nm = String(a.name || '').trim();
+  const em = normalizeEmail(a.email);
+  if (!nm) return { error: 'Name is required' };
+  if (!validEmail(em)) return { error: 'Enter a valid email address' };
+  const dup = await pool.query('SELECT 1 FROM admins WHERE lower(email) = $1 AND id <> $2', [em, id]);
+  if (dup.rows.length) return { error: 'Another admin already uses that email' };
+
+  // Password only changes if a (non-blank) value is supplied. Blank = keep current.
+  const pw = String(a.password == null ? '' : a.password);
+  if (pw) {
+    if (pw.length < MIN_PASSWORD) return { error: `Password must be at least ${MIN_PASSWORD} characters` };
+    const { salt, hash } = hashPassword(pw);
+    const { rowCount } = await pool.query(
+      `UPDATE admins SET name=$1, email=$2, pw_salt=$3, pw_hash=$4 WHERE id=$5`,
+      [nm, em, salt, hash, id]);
+    if (!rowCount) return { error: 'Admin not found' };
+  } else {
+    const { rowCount } = await pool.query(
+      `UPDATE admins SET name=$1, email=$2 WHERE id=$3`, [nm, em, id]);
+    if (!rowCount) return { error: 'Admin not found' };
+  }
+  return { ok: true };
+}
+
+async function setAdminActive(who, id, active) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const aid = cleanInt(id);
+  if (aid === null) return { error: 'Bad admin id' };
+  await pool.query('UPDATE admins SET active=$1 WHERE id=$2', [!!active, aid]);
+  if (!active) await pool.query('DELETE FROM admin_sessions WHERE admin_id=$1', [aid]); // revoke logins
   return { ok: true };
 }
 
@@ -729,28 +907,43 @@ app.post('/', async (req, res) => {
   const action = body.action;
   try {
     let out;
+    // Public actions need no identity.
     switch (action) {
-      case 'login':     out = await login(body.pin); break;
-      case 'getData':   out = await getData(body.pin); break;
-      case 'getPublic': out = await getPublic(); break;
-      case 'award':     out = await awardBubbles(body.pin, body.name, body.metric, body.amount); break;
-      case 'awardTeam': out = await awardTeam(body.pin, body.metric, body.amount); break;
-      case 'undo':      out = await reverseAward(body.pin, body.name, body.metric, body.amount); break;
-      case 'request':   out = await requestRedemption(body.pin, body.reward); break;
-      case 'resolve':   out = await resolveRedemption(body.pin, body.row, body.approve); break;
-      case 'fulfill':   out = await fulfillRedemption(body.pin, body.row); break;
-      // ----- Admin (manager only) -----
-      case 'getAdmin':          out = await getAdmin(body.pin); break;
-      case 'addRule':           out = await addRule(body.pin, body.rule); break;
-      case 'updateRule':        out = await updateRule(body.pin, body.rule); break;
-      case 'setRuleActive':     out = await setRuleActive(body.pin, body.id, body.active); break;
-      case 'addReward':         out = await addReward(body.pin, body.reward); break;
-      case 'updateReward':      out = await updateReward(body.pin, body.reward); break;
-      case 'setRewardActive':   out = await setRewardActive(body.pin, body.id, body.active); break;
-      case 'addEmployee':       out = await addEmployee(body.pin, body.employee); break;
-      case 'updateEmployee':    out = await updateEmployee(body.pin, body.employee); break;
-      case 'setEmployeeActive': out = await setEmployeeActive(body.pin, body.id, body.active); break;
-      default:          out = { error: 'Unknown action: ' + action };
+      case 'login':       out = await login(body.pin); break;
+      case 'getPublic':   out = await getPublic(); break;
+      case 'adminLogin':  out = await adminLogin(body); break;
+      case 'adminSignup': out = await adminSignup(body); break;
+      case 'adminLogout': out = await adminLogout(body); break;
+    }
+    // Everything else resolves the caller once (admin token, employee PIN, or
+    // break-glass Manager PIN) and passes that identity to the handler.
+    if (out === undefined) {
+      const who = await resolveAuth(body);
+      switch (action) {
+        case 'getData':   out = await getData(who); break;
+        case 'award':     out = await awardBubbles(who, body.name, body.metric, body.amount); break;
+        case 'awardTeam': out = await awardTeam(who, body.metric, body.amount); break;
+        case 'undo':      out = await reverseAward(who, body.name, body.metric, body.amount); break;
+        case 'request':   out = await requestRedemption(who, body.reward); break;
+        case 'resolve':   out = await resolveRedemption(who, body.row, body.approve); break;
+        case 'fulfill':   out = await fulfillRedemption(who, body.row); break;
+        // ----- Admin (manager only) -----
+        case 'getAdmin':          out = await getAdmin(who); break;
+        case 'addRule':           out = await addRule(who, body.rule); break;
+        case 'updateRule':        out = await updateRule(who, body.rule); break;
+        case 'setRuleActive':     out = await setRuleActive(who, body.id, body.active); break;
+        case 'addReward':         out = await addReward(who, body.reward); break;
+        case 'updateReward':      out = await updateReward(who, body.reward); break;
+        case 'setRewardActive':   out = await setRewardActive(who, body.id, body.active); break;
+        case 'addEmployee':       out = await addEmployee(who, body.employee); break;
+        case 'updateEmployee':    out = await updateEmployee(who, body.employee); break;
+        case 'setEmployeeActive': out = await setEmployeeActive(who, body.id, body.active); break;
+        case 'listAdmins':        out = await listAdmins(who); break;
+        case 'addAdmin':          out = await addAdmin(who, body.admin); break;
+        case 'updateAdmin':       out = await updateAdmin(who, body.admin); break;
+        case 'setAdminActive':    out = await setAdminActive(who, body.id, body.active); break;
+        default:                  out = { error: 'Unknown action: ' + action };
+      }
     }
     res.json(out);
   } catch (err) {
