@@ -1736,6 +1736,20 @@ const EMAIL_KEY = "aspb_admin_email";
 function saveEmail(em)  { try { localStorage.setItem(EMAIL_KEY, em); } catch (e) {} }
 function storedEmail()  { try { return localStorage.getItem(EMAIL_KEY) || ""; } catch (e) { return ""; } }
 
+// Ask the browser's password manager to save these credentials. Because login
+// happens via JS (no page navigation), Chrome/Edge won't offer to save on their
+// own — the Credential Management API explicitly triggers the "Save password?"
+// prompt. No-op on browsers that don't support it (they use their own heuristics).
+async function offerSavePassword(email, password, name) {
+  try {
+    if (window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
+      await navigator.credentials.store(new window.PasswordCredential({
+        id: email, password: password, name: name || email,
+      }));
+    }
+  } catch (e) { /* browser declined or unsupported — ignore */ }
+}
+
 // On page load: if a saved admin token exists and is still valid, resume the
 // session silently (no login screen). Returns true if resumed.
 async function tryRestoreSession() {
@@ -1784,6 +1798,7 @@ async function doAdminLogin() {
     session.pin = null;
     saveToken(res.token);   // stay signed in across reloads
     saveEmail(email);       // remember email for faster re-login
+    offerSavePassword(email, password, res.name);  // ask browser to save the password
     enterApp(res);
   } catch (err) {
     showLoginErr("adminLoginError", "Error: " + (err && err.message ? err.message : err));
@@ -1802,6 +1817,7 @@ async function doAdminSignup() {
     session.pin = null;
     saveToken(res.token);   // stay signed in across reloads
     saveEmail(email);       // remember email for faster re-login
+    offerSavePassword(email, password, res.name);  // ask browser to save the password
     enterApp(res);
   } catch (err) {
     showLoginErr("adminSignupError", "Error: " + (err && err.message ? err.message : err));
