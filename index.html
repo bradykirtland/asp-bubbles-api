@@ -1793,7 +1793,6 @@ function renderChecklistAdmin() {
   }
   const toggle = `<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
     <button class="${state.checkMode ? "primary" : "ghost"}" id="clCheckModeBtn">${state.checkMode ? "✓ Check mode: ON" : "✎ Check mode: OFF"}</button>
-    <button class="ghost" id="clRemindBtn">✉ Remind closer now</button>
     <span class="muted" style="font-size:12px;">${state.checkMode ? "You can tick/untick boxes to correct a run." : "Flag-only. Turn on Check mode to fix a missed or wrong check."}</span>
   </div>`;
 
@@ -1816,22 +1815,10 @@ function renderChecklistAdmin() {
 
   body.innerHTML = toggle + filterBar + list;
   $("clCheckModeBtn").addEventListener("click", () => { state.checkMode = !state.checkMode; renderChecklistAdmin(); });
-  $("clRemindBtn").addEventListener("click", remindNow);
   $("clfName").addEventListener("change", () => { state.checklistFilter.name = $("clfName").value; renderChecklistAdmin(); });
   $("clfDate").addEventListener("change", () => { state.checklistFilter.date = $("clfDate").value; renderChecklistAdmin(); });
   $("clfClear").addEventListener("click", () => { state.checklistFilter = { name: "", date: "" }; renderChecklistAdmin(); });
   wireRunCards(body);
-}
-
-async function remindNow() {
-  try {
-    const res = await apiCall("remindChecklistNow", { pin: session.pin });
-    if (res.error) { alert(res.error); return; }
-    if (res.emailConfigured) alert("Reminder emailed to " + res.sentTo + ".");
-    else alert("Reminder logged for " + res.sentTo + ", but email isn't turned on yet — enable Resend (RESEND_API_KEY) to actually send it.");
-  } catch (err) {
-    alert("Error: " + (err && err.message ? err.message : err));
-  }
 }
 
 async function adminChecklistAction(action, params) {
