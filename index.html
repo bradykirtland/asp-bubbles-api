@@ -538,7 +538,7 @@
   .cl-item.checked .cl-label { color:var(--muted); }
   .cl-item.flagged { border-color:#fecaca; background:#fff1f2; }
   .cl-flagnote { color:var(--danger); font-size:12px; margin-top:5px; }
-  .cl-submitbar { position:sticky; bottom:70px; padding-top:8px; }
+  .cl-submitbar { padding:8px 0 4px; }
   .cl-submitbar button { width:100%; padding:14px; font-size:16px; font-weight:700; }
   .cl-submitbar button:disabled { background:#d4d4d0; border-color:#d4d4d0; color:#8a8a85; cursor:not-allowed; }
 
@@ -1041,6 +1041,7 @@ const state = {
   checkLocal: {},       // employee's local checkbox state before submit {itemId: bool}
   clAlerted: false,     // whether we've popped the "your turn" alert this load
   flagItemId: null,     // item being flagged
+  checkMode: false,     // manager: when on, can tick/untick to correct; otherwise flag-only
 };
 
 function normalizeCatalog(rows) {
@@ -1573,45 +1574,54 @@ function renderChecklistEmployee() {
   const body = $("checklistBody");
   $("checklistHeading").textContent = "End-of-day checklist";
   const c = state.checklistFull;
+  let html = "";
+  let interactive = false;
+
   if (!c || !c.assignee) {
-    body.innerHTML = `<div class="cl-banner info">No one is assigned to close up today yet. Check back later.</div>`;
-    return;
+    html = `<div class="cl-banner info">No one is assigned to close up today (it may be a weekend). Check back on a workday.</div>`;
+  } else if (!c.mine) {
+    html = `<div class="cl-banner info"><strong>${escapeHtml(c.assignee)}</strong> is on closing duty today — ${c.status === "completed" ? "checklist completed ✓" : "checklist not done yet."}</div>`;
+  } else if (c.status === "completed") {
+    html = `<div class="cl-banner done">✓ You completed today's closing checklist. Thanks!</div>` + renderChecklistReadonly(c.items);
+  } else {
+    interactive = true;
+    const groups = groupByCategory(c.items);
+    html = `<div class="cl-banner">It's your turn to close up. Check off each task — every box must be ticked before you can submit.<br><br><strong>⚠️ Bubbles can be taken away if you don't complete the checklist, or if you check something off that wasn't actually done.</strong></div>`;
+    html += groups.map(g => `
+      <div class="cl-cat">
+        <div class="ctitle">${escapeHtml(g.category)}</div>
+        ${g.items.map(it => {
+          const on = !!state.checkLocal[it.id];
+          return `<label class="cl-item tappable ${on ? "checked" : ""}">
+            <input type="checkbox" ${on ? "checked" : ""} data-cb="${it.id}">
+            <span class="cl-label">${escapeHtml(it.label)}</span>
+          </label>`;
+        }).join("")}
+      </div>`).join("");
+    const total = c.items.length;
+    const done = c.items.filter(it => state.checkLocal[it.id]).length;
+    const allChecked = total > 0 && done === total;
+    html += `<div class="cl-submitbar"><button class="primary" id="clSubmitBtn" ${allChecked ? "" : "disabled"}>${allChecked ? "Submit checklist" : "Check all to submit (" + done + "/" + total + ")"}</button></div>`;
   }
-  if (!c.mine) {
-    body.innerHTML = `<div class="cl-banner info"><strong>${escapeHtml(c.assignee)}</strong> is on closing duty today — ${c.status === "completed" ? "checklist completed ✓" : "checklist not done yet."}</div>`;
-    return;
+
+  // Read-only history of past checklists — visible to everyone.
+  const history = (c && c.history) || [];
+  if (history.length) {
+    html += `<h2 class="section" style="margin-top:24px;">Past checklists</h2>` + runCardsHtml(history, c ? c.today : "", { interactive: false });
   }
-  if (c.status === "completed") {
-    body.innerHTML = `<div class="cl-banner done">✓ You completed today's closing checklist. Thanks!</div>` + renderChecklistReadonly(c.items);
-    return;
-  }
-  const groups = groupByCategory(c.items);
-  let html = `<div class="cl-banner">It's your turn to close up. Check off each task — every box must be ticked before you can submit.</div>`;
-  html += groups.map(g => `
-    <div class="cl-cat">
-      <div class="ctitle">${escapeHtml(g.category)}</div>
-      ${g.items.map(it => {
-        const on = !!state.checkLocal[it.id];
-        return `<label class="cl-item tappable ${on ? "checked" : ""}">
-          <input type="checkbox" ${on ? "checked" : ""} data-cb="${it.id}">
-          <span class="cl-label">${escapeHtml(it.label)}</span>
-        </label>`;
-      }).join("")}
-    </div>`).join("");
-  const total = c.items.length;
-  const done = c.items.filter(it => state.checkLocal[it.id]).length;
-  const allChecked = total > 0 && done === total;
-  html += `<div class="cl-submitbar"><button class="primary" id="clSubmitBtn" ${allChecked ? "" : "disabled"}>${allChecked ? "Submit checklist" : "Check all to submit (" + done + "/" + total + ")"}</button></div>`;
   body.innerHTML = html;
 
-  body.querySelectorAll("input[data-cb]").forEach(cb => {
-    cb.addEventListener("change", () => {
-      state.checkLocal[parseInt(cb.dataset.cb, 10)] = cb.checked;
-      renderChecklistEmployee();
+  if (interactive) {
+    body.querySelectorAll("input[data-cb]").forEach(cb => {
+      cb.addEventListener("change", () => {
+        state.checkLocal[parseInt(cb.dataset.cb, 10)] = cb.checked;
+        renderChecklistEmployee();
+      });
     });
-  });
-  const sb = $("clSubmitBtn");
-  if (sb) sb.addEventListener("click", submitChecklistNow);
+    const sb = $("clSubmitBtn");
+    if (sb) sb.addEventListener("click", submitChecklistNow);
+  }
+  wireRunCards(body);
 }
 
 function renderChecklistReadonly(items) {
@@ -1644,19 +1654,15 @@ async function submitChecklistNow() {
   }
 }
 
-// ----- Manager review -----
-function renderChecklistAdmin() {
-  const body = $("checklistBody");
-  $("checklistHeading").textContent = "Closing checklist — review";
-  const data = state.checklistAdmin;
-  if (!data || !data.runs || !data.runs.length) {
-    body.innerHTML = `<div class="cl-banner info">No checklist activity yet.</div>`;
-    return;
-  }
-  const today = data.today;
-  body.innerHTML = data.runs.map((r, i) => {
+// Shared run-card HTML. interactive=true adds Flag/Unflag buttons; checkboxes are
+// editable (Correct) only when interactive AND checkMode are both on.
+function runCardsHtml(runs, today, opts) {
+  opts = opts || {};
+  const interactive = !!opts.interactive;
+  const checkMode = !!opts.checkMode;
+  return runs.map((r, i) => {
     let statusClass = r.status, statusLabel = (r.status === "completed" ? "Completed" : "Pending");
-    if (r.status !== "completed" && r.run_date < today) { statusClass = "missed"; statusLabel = "Not completed"; }
+    if (r.status !== "completed" && today && r.run_date < today) { statusClass = "missed"; statusLabel = "Not completed"; }
     const flaggedCount = r.items.filter(it => it.flagged).length;
     const checkedCount = r.items.filter(it => it.checked).length;
     const open = i === 0;
@@ -1674,22 +1680,20 @@ function renderChecklistAdmin() {
             <div class="cl-acat" style="margin-top:10px;">${escapeHtml(g.category)}</div>
             ${g.items.map(it => `
               <div class="cl-arow ${it.flagged ? "flagged" : ""}">
-                <input type="checkbox" class="cl-acheck" ${it.checked ? "checked" : ""} data-correct="${it.id}" title="Fix a missed/wrong check">
+                <input type="checkbox" class="cl-acheck" ${it.checked ? "checked" : ""} ${interactive && checkMode ? `data-correct="${it.id}" title="Tick/untick to correct"` : "disabled"}>
                 <div class="cl-amain">
                   ${escapeHtml(it.label)}
                   ${it.flagged ? `<div class="cl-flagnote">⚑ ${escapeHtml(it.flag_note || "Flagged")}${it.flagged_by ? " — " + escapeHtml(it.flagged_by) : ""}</div>` : ""}
                 </div>
-                <div class="cl-abtns">
-                  ${it.flagged
-                    ? `<button class="ghost" data-unflag="${it.id}">Unflag</button>`
-                    : `<button class="ghost" data-flag="${it.id}" data-label="${escapeAttr(it.label)}">Flag</button>`}
-                </div>
+                ${interactive ? `<div class="cl-abtns">${it.flagged ? `<button class="ghost" data-unflag="${it.id}">Unflag</button>` : `<button class="ghost" data-flag="${it.id}" data-label="${escapeAttr(it.label)}">Flag</button>`}</div>` : ""}
               </div>`).join("")}
           `).join("") : `<div class="cl-meta" style="padding:8px 0;">No tasks were on this run.</div>`}
         </div>
       </div>`;
   }).join("");
+}
 
+function wireRunCards(body) {
   body.querySelectorAll(".cl-runhead").forEach(h => h.addEventListener("click", () => {
     const rb = $("clrun-" + h.dataset.run); if (rb) rb.hidden = !rb.hidden;
   }));
@@ -1705,6 +1709,24 @@ function renderChecklistAdmin() {
     e.stopPropagation();
     adminChecklistAction("unflagChecklistItem", { itemId: parseInt(b.dataset.unflag, 10) });
   }));
+}
+
+// ----- Manager review -----
+function renderChecklistAdmin() {
+  const body = $("checklistBody");
+  $("checklistHeading").textContent = "Closing checklist — review";
+  const data = state.checklistAdmin;
+  if (!data || !data.runs || !data.runs.length) {
+    body.innerHTML = `<div class="cl-banner info">No checklist activity yet.</div>`;
+    return;
+  }
+  const toggle = `<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+    <button class="${state.checkMode ? "primary" : "ghost"}" id="clCheckModeBtn">${state.checkMode ? "✓ Check mode: ON" : "✎ Check mode: OFF"}</button>
+    <span class="muted" style="font-size:12px;">${state.checkMode ? "You can tick/untick boxes to correct a run." : "Flag-only. Turn on Check mode to fix a missed or wrong check."}</span>
+  </div>`;
+  body.innerHTML = toggle + runCardsHtml(data.runs, data.today, { interactive: true, checkMode: state.checkMode });
+  $("clCheckModeBtn").addEventListener("click", () => { state.checkMode = !state.checkMode; renderChecklistAdmin(); });
+  wireRunCards(body);
 }
 
 async function adminChecklistAction(action, params) {

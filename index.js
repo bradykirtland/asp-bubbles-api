@@ -1020,19 +1020,47 @@ async function checklistSummary(who) {
   };
 }
 
-// Full today's run for the employee Checklist tab.
+// Recent runs (most recent first) with their items attached. Shared by the
+// employee history view and the manager review.
+async function runsWithItems(limit) {
+  const { rows: runs } = await pool.query(`
+    SELECT r.id, to_char(r.run_date, 'YYYY-MM-DD') AS run_date, r.status, r.submitted_at,
+           e.name AS assignee
+      FROM checklist_runs r LEFT JOIN employees e ON e.id = r.employee_id
+     ORDER BY r.run_date DESC LIMIT $1`, [limit]);
+  const ids = runs.map(r => r.id);
+  const byRun = {};
+  if (ids.length) {
+    const { rows: items } = await pool.query(`
+      SELECT id, run_id, category, label, checked, flagged, flag_note, flagged_by
+        FROM checklist_items WHERE run_id = ANY($1) ORDER BY sort_order, id`, [ids]);
+    items.forEach(it => { (byRun[it.run_id] = byRun[it.run_id] || []).push(it); });
+  }
+  return runs.map(r => ({ ...r, items: byRun[r.id] || [] }));
+}
+
+async function todayStr() {
+  return (await pool.query(`SELECT to_char(${BIZ_DATE}, 'YYYY-MM-DD') AS d`)).rows[0].d;
+}
+
+// Today's run for the employee Checklist tab, plus read-only history of past days.
 async function getChecklist(who) {
   if (!who) return { error: 'Not authorized' };
   const run = await ensureTodayRun();
-  if (!run) return { date: null, assignee: null, status: null, mine: false, items: [] };
+  const today = await todayStr();
+  const recent = await runsWithItems(15);
+  const history = recent.filter(r => r.run_date !== today);   // past days only
+  if (!run) {
+    return { date: today, today, assignee: null, status: null, mine: false, items: [], history };
+  }
   const assignee = await nameForEmpId(run.employee_id);
-  const { rows: items } = await pool.query(
-    `SELECT id, category, label, checked, flagged FROM checklist_items WHERE run_id = $1 ORDER BY sort_order, id`,
-    [run.id]);
+  const todayRow = recent.find(r => r.id === run.id);
   return {
-    date: run.run_date, assignee, status: run.status,
+    date: today, today, assignee, status: run.status,
     mine: who.role === 'employee' && assignee === who.name,
-    submittedAt: run.submitted_at, items,
+    submittedAt: run.submitted_at,
+    items: todayRow ? todayRow.items : [],
+    history,
   };
 }
 
@@ -1053,21 +1081,7 @@ async function submitChecklist(who) {
 async function getChecklistAdmin(who) {
   if (!isManager(who)) return { error: 'Manager only' };
   await ensureTodayRun();
-  const { rows: runs } = await pool.query(`
-    SELECT r.id, to_char(r.run_date, 'YYYY-MM-DD') AS run_date, r.status, r.submitted_at,
-           e.name AS assignee
-      FROM checklist_runs r LEFT JOIN employees e ON e.id = r.employee_id
-     ORDER BY r.run_date DESC LIMIT 21`);
-  const ids = runs.map(r => r.id);
-  const byRun = {};
-  if (ids.length) {
-    const { rows: items } = await pool.query(`
-      SELECT id, run_id, category, label, checked, flagged, flag_note, flagged_by
-        FROM checklist_items WHERE run_id = ANY($1) ORDER BY sort_order, id`, [ids]);
-    items.forEach(it => { (byRun[it.run_id] = byRun[it.run_id] || []).push(it); });
-  }
-  const todayStr = (await pool.query(`SELECT to_char(${BIZ_DATE}, 'YYYY-MM-DD') AS d`)).rows[0].d;
-  return { today: todayStr, runs: runs.map(r => ({ ...r, items: byRun[r.id] || [] })) };
+  return { today: await todayStr(), runs: await runsWithItems(21) };
 }
 
 // Flag a task as missed/wrong, with an optional bubble deduction in one step.
