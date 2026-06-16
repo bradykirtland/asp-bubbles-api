@@ -1278,7 +1278,7 @@ STATIC_FILES.forEach(name => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true, app: 'asp-bubbles' });
+  res.json({ ok: true, app: 'action-spa-warehouse' });
 });
 
 app.post('/', async (req, res) => {
@@ -1359,5 +1359,5 @@ app.post('/', async (req, res) => {
   } catch (e) {
     console.error('ensureSchema failed (continuing to serve anyway):', e);
   }
-  app.listen(PORT, () => console.log('ASP Bubbles API listening on port', PORT));
+  app.listen(PORT, () => console.log('Action Spa Warehouse API listening on port', PORT));
 })();
