@@ -117,6 +117,8 @@ async function ensureSchema() {
       flagged_at TIMESTAMPTZ
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS checklist_items_run_idx ON checklist_items(run_id)`);
+  await pool.query(`ALTER TABLE checklist_runs ADD COLUMN IF NOT EXISTS reminded_count INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE checklist_runs ADD COLUMN IF NOT EXISTS last_reminded_at TIMESTAMPTZ`);
 
   // Seed the standard 16 tasks once (only if the table is empty).
   const { rows: tc } = await pool.query('SELECT COUNT(*)::int AS n FROM checklist_tasks');
@@ -949,6 +951,13 @@ const BIZ_DATE = "(now() AT TIME ZONE 'America/Los_Angeles')::date";
 // Days of week with no closing checklist (office closed). 0 = Sunday, 6 = Saturday.
 const CLOSED_DOWS = [0, 6];
 
+// Email reminders to the assigned closer (Pacific time). The reminder loop only
+// acts inside this afternoon window, on workdays, until the checklist is done.
+const REMIND_START_HOUR = 13;          // 1 PM Pacific — start reminding
+const REMIND_END_HOUR   = 18;          // 6 PM Pacific — stop reminding
+const REMIND_GAP_MIN    = 45;          // minimum minutes between reminders
+const REMIND_CHECK_MS   = 15 * 60 * 1000;  // how often the loop checks
+
 async function nameForEmpId(id) {
   if (id == null) return null;
   const { rows } = await pool.query('SELECT name FROM employees WHERE id = $1', [id]);
@@ -1178,6 +1187,70 @@ async function resetChecklist(who) {
   return { ok: true, assignee: run ? await nameForEmpId(run.employee_id) : null };
 }
 
+// ----- Reminder emails to the assigned closer -----
+
+const APP_URL = 'https://asp-bubbles-api-production.up.railway.app/';
+
+function checklistReminderEmail(name, count) {
+  if (count === 0) {
+    return {
+      subject: "You're closing up today — end-of-day checklist",
+      body: `Hi ${name},\n\nIt's your turn to do the end-of-day checklist before you leave today.\nOpen the app and go to the Checklist tab: ${APP_URL}\n\nHeads up: bubbles can be deducted if the checklist isn't completed, or if something is checked off that wasn't actually done.\n\n— Action Spa Parts`,
+    };
+  }
+  return {
+    subject: "Reminder: today's end-of-day checklist isn't done",
+    body: `Hi ${name},\n\nThis is a reminder that today's end-of-day checklist still isn't finished. Please complete it before you leave.\nOpen the app: ${APP_URL}\n\nBubbles can be deducted if the checklist isn't completed.\n\n— Action Spa Parts`,
+  };
+}
+
+// Sends a reminder to today's assignee if appropriate. force=true skips the
+// time-window / gap checks (used by the manager "Remind now" button).
+async function maybeRemindChecklist(force) {
+  const run = await ensureTodayRun();
+  if (!run || run.status === 'completed' || run.employee_id == null) return { ok: false, reason: 'nobody to remind' };
+
+  if (!force) {
+    const { rows: t } = await pool.query(`
+      SELECT EXTRACT(DOW  FROM ${BIZ_DATE})::int AS dow,
+             EXTRACT(HOUR FROM (now() AT TIME ZONE 'America/Los_Angeles'))::int AS hour`);
+    if (CLOSED_DOWS.includes(t[0].dow)) return { ok: false, reason: 'closed day' };
+    if (t[0].hour < REMIND_START_HOUR || t[0].hour >= REMIND_END_HOUR) return { ok: false, reason: 'outside window' };
+    const { rows: g } = await pool.query(
+      `SELECT (last_reminded_at IS NULL OR last_reminded_at < now() - ($1 || ' minutes')::interval) AS due
+         FROM checklist_runs WHERE id = $2`, [String(REMIND_GAP_MIN), run.id]);
+    if (!g.length || !g[0].due) return { ok: false, reason: 'too soon' };
+  }
+
+  const { rows: emp } = await pool.query(
+    'SELECT name, email FROM employees WHERE id = $1', [run.employee_id]);
+  if (!emp.length) return { ok: false, reason: 'no employee' };
+  const { name, email } = emp[0];
+  if (!email) return { ok: false, reason: 'no email on file for ' + name, name };
+
+  const { rows: cnt } = await pool.query('SELECT reminded_count FROM checklist_runs WHERE id = $1', [run.id]);
+  const m = checklistReminderEmail(name, cnt.length ? cnt[0].reminded_count : 0);
+  await sendResend(email, m.subject, m.body);   // no-op if RESEND_API_KEY is unset
+  await pool.query(
+    `UPDATE checklist_runs SET reminded_count = reminded_count + 1, last_reminded_at = now() WHERE id = $1`,
+    [run.id]);
+  return { ok: true, name, emailConfigured: !!RESEND_API_KEY };
+}
+
+// Manager "Remind now" — force a reminder to today's assignee.
+async function remindChecklistNow(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const r = await maybeRemindChecklist(true);
+  if (!r.ok) return { error: r.reason || 'Could not send reminder' };
+  return { ok: true, sentTo: r.name, emailConfigured: r.emailConfigured };
+}
+
+// Background loop: nudge the assignee during the afternoon window until done.
+async function reminderTick() {
+  try { await maybeRemindChecklist(false); }
+  catch (e) { console.warn('reminderTick error:', e && e.message ? e.message : e); }
+}
+
 // =================================================================
 // HTTP server
 // =================================================================
@@ -1270,6 +1343,7 @@ app.post('/', async (req, res) => {
         case 'updateChecklistTask':  out = await updateChecklistTask(who, body.task); break;
         case 'setChecklistTaskActive': out = await setChecklistTaskActive(who, body.id, body.active); break;
         case 'resetChecklist':       out = await resetChecklist(who); break;
+        case 'remindChecklistNow':   out = await remindChecklistNow(who); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
@@ -1290,4 +1364,7 @@ app.post('/', async (req, res) => {
     console.error('ensureSchema failed (continuing to serve anyway):', e);
   }
   app.listen(PORT, () => console.log('ASP Bubbles API listening on port', PORT));
+  // Afternoon reminder loop (in-process; the service stays awake from app/TV
+  // traffic). Sends nothing until Resend is configured — safe to run regardless.
+  setInterval(reminderTick, REMIND_CHECK_MS);
 })();
