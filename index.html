@@ -1699,7 +1699,7 @@ function wireRunCards(body) {
   }));
   body.querySelectorAll("[data-correct]").forEach(cb => cb.addEventListener("click", (e) => {
     e.stopPropagation();
-    adminChecklistAction("correctChecklistItem", { itemId: parseInt(cb.dataset.correct, 10), checked: cb.checked });
+    correctItem(cb, parseInt(cb.dataset.correct, 10), cb.checked);
   }));
   body.querySelectorAll("[data-flag]").forEach(b => b.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1736,6 +1736,37 @@ async function adminChecklistAction(action, params) {
     await loadChecklist();
     fetchData();
   } catch (err) { alert("Error: " + (err && err.message ? err.message : err)); }
+}
+
+// Correcting a check updates IN PLACE (no full re-render) so the run card
+// doesn't flash/collapse on every click. Posts in the background; reverts on error.
+function clUpdateRunCount(cb, run) {
+  const card = cb.closest(".cl-run");
+  const sub = card && card.querySelector(".cl-rh-sub");
+  if (sub && run) {
+    const checked = run.items.filter(it => it.checked).length;
+    const flagged = run.items.filter(it => it.flagged).length;
+    sub.textContent = checked + "/" + run.items.length + " checked" + (flagged ? " · " + flagged + " flagged" : "");
+  }
+}
+async function correctItem(cb, itemId, checked) {
+  let run = null;
+  if (state.checklistAdmin) {
+    state.checklistAdmin.runs.forEach(r => r.items.forEach(it => { if (it.id === itemId) { it.checked = checked; run = r; } }));
+  }
+  clUpdateRunCount(cb, run);
+  try {
+    const res = await apiCall("correctChecklistItem", { pin: session.pin, itemId: itemId, checked: checked });
+    if (res.error) {
+      alert(res.error);
+      cb.checked = !checked;
+      if (run) { run.items.forEach(it => { if (it.id === itemId) it.checked = !checked; }); clUpdateRunCount(cb, run); }
+    }
+  } catch (err) {
+    alert("Error: " + (err && err.message ? err.message : err));
+    cb.checked = !checked;
+    if (run) { run.items.forEach(it => { if (it.id === itemId) it.checked = !checked; }); clUpdateRunCount(cb, run); }
+  }
 }
 
 function openFlag(itemId, label) {
