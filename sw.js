@@ -2,11 +2,13 @@
 // the app opens instantly and survives a flaky connection. API data is always
 // fetched live (never cached).
 
-const CACHE = "asp-bubbles-v39";
+const CACHE = "asp-bubbles-v41";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
+  "./logo.svg",
+  "./bubbles-icon.png",
   "./icon-192.png",
   "./icon-512.png",
   "./apple-touch-icon.png",

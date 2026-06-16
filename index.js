@@ -1259,6 +1259,7 @@ app.use(express.text({ type: '*/*', limit: '64kb' }));
 // allow-list so server source files (index.js, package.json) aren't exposed.
 const STATIC_FILES = [
   'index.html', 'tv.html', 'sw.js', 'manifest.json',
+  'logo.svg', 'bubbles-icon.png',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',
 ];
 

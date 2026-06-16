@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="ASP Bubbles">
+<meta name="apple-mobile-web-app-title" content="Action Spa Warehouse">
 <meta name="theme-color" content="#1e3a8a">
-<title>ASP Bubbles</title>
+<title>Action Spa Warehouse</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -519,6 +519,45 @@
   }
   .badge.off { background:#f0efeb; color:var(--muted); }
 
+  /* Home launcher (Action Warehouse) */
+  .bottomnav[hidden] { display: none; }
+  header.top[hidden] { display: none; }
+  .home-head { text-align:center; padding: 6px 0 24px; }
+  .home-head .home-logo {
+    width:64px; height:64px; border-radius:18px; box-shadow:var(--shadow-card);
+    margin:0 auto 12px; display:block;
+  }
+  .home-head h2 { font-size:24px; font-weight:700; letter-spacing:-0.02em; margin:0; }
+  .home-head .home-sub { color:var(--muted); font-size:14px; margin-top:3px; }
+  .app-tiles { display:flex; flex-direction:column; gap:12px; max-width:520px; margin:0 auto; }
+  .app-tile {
+    display:flex; align-items:center; gap:16px; width:100%; text-align:left;
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--shadow-card); padding:16px; cursor:pointer; color:inherit; text-decoration:none;
+    font:inherit;
+  }
+  .app-tile:hover { border-color:var(--accent); }
+  .app-tile:disabled, .app-tile.disabled { opacity:.55; cursor:not-allowed; box-shadow:none; }
+  .app-tile:disabled:hover, .app-tile.disabled:hover { border-color:var(--border); }
+  .app-tile .tile-icon {
+    width:48px; height:48px; border-radius:13px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--accent-soft); color:var(--accent); font-size:24px;
+  }
+  .app-tile .tile-icon img { width:48px; height:48px; border-radius:13px; display:block; }
+  .app-tile .tile-body { flex:1; min-width:0; }
+  .app-tile .tile-name { font-size:16px; font-weight:600; display:block; }
+  .app-tile .tile-desc { font-size:13px; color:var(--muted); margin-top:1px; display:block; }
+  .app-tile .tile-arrow { color:var(--muted); font-size:22px; flex-shrink:0; line-height:1; }
+  .app-tile.tv { box-shadow:none; border-style:dashed; }
+  .turn-badge {
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+    padding:2px 8px; border-radius:99px; background:var(--danger-soft); color:var(--danger);
+    margin-left:8px; vertical-align:middle;
+  }
+  .app-tile.alert { border-color:var(--danger); }
+  .app-tile.alert .tile-icon { animation: navpulse 1.2s ease-in-out infinite; }
+
   /* End-of-day checklist */
   .navbtn.alert { color: var(--danger); }
   .navbtn.alert .navicon { animation: navpulse 1.2s ease-in-out infinite; }
@@ -618,7 +657,7 @@
 <div class="overlay" id="loginOverlay">
   <div class="overlay-card narrow">
     <div style="text-align:center; padding:28px 22px 8px;">
-      <img src="icon-192.png" alt="ASP Bubbles logo" width="68" height="68"
+      <img src="bubbles-icon.png" alt="ASP Bubbles logo" width="68" height="68"
            style="border-radius:18px; box-shadow: var(--shadow-card);">
       <div style="font-weight:700; font-size:20px; letter-spacing:-0.02em; margin-top:14px;">ASP Bubbles</div>
       <div class="muted" style="font-size:13px; margin-top:2px;">Warehouse rewards</div>
@@ -681,14 +720,15 @@
 
   <header class="top">
     <div>
-      <h1>Action Spa Parts — Warehouse Bubbles</h1>
-      <div class="sub">Recognize warehouse wins</div>
+      <h1 id="appTitle">Action Warehouse</h1>
+      <div class="sub" id="appSub">Pick an app to open</div>
     </div>
   </header>
 
   <div class="note" id="statusNote" hidden></div>
 
   <section class="panel toolbar">
+    <button class="ghost" id="homeBtn" hidden>⌂ Home</button>
     <button class="ghost" id="refreshBtn">Refresh</button>
     <button class="ghost" id="manageBtn" hidden>⚙ Manage</button>
     <span style="flex:1"></span>
@@ -696,6 +736,50 @@
     <button class="ghost" id="logoutBtn">Log out</button>
   </section>
 
+  <!-- ===== Home launcher (Action Warehouse) ===== -->
+  <div id="homeScreen">
+    <div class="home-head">
+      <img class="home-logo" src="logo.svg" alt="Action Spa Warehouse">
+      <h2>Action Spa Warehouse</h2>
+      <div class="home-sub">Pick an app to open</div>
+    </div>
+    <div class="app-tiles">
+      <button class="app-tile" id="tileBubbles">
+        <span class="tile-icon"><img src="bubbles-icon.png" alt=""></span>
+        <span class="tile-body">
+          <span class="tile-name">Bubbles</span>
+          <span class="tile-desc">Rewards &amp; leaderboard</span>
+        </span>
+        <span class="tile-arrow">›</span>
+      </button>
+      <button class="app-tile" id="tileChecklist">
+        <span class="tile-icon">📋</span>
+        <span class="tile-body">
+          <span class="tile-name">Closing Checklist<span class="turn-badge" id="clTurnBadge" hidden>your turn</span></span>
+          <span class="tile-desc">End-of-day closing tasks</span>
+        </span>
+        <span class="tile-arrow">›</span>
+      </button>
+      <button class="app-tile disabled" id="tileBoxTracker" disabled>
+        <span class="tile-icon">📦</span>
+        <span class="tile-body">
+          <span class="tile-name">Box Tracker <span class="badge off">soon</span></span>
+          <span class="tile-desc">Packaging box counts</span>
+        </span>
+      </button>
+      <a class="app-tile tv" href="/tv" target="_blank" rel="noopener">
+        <span class="tile-icon">📺</span>
+        <span class="tile-body">
+          <span class="tile-name">Warehouse TV</span>
+          <span class="tile-desc">No-login wall display</span>
+        </span>
+        <span class="tile-arrow">↗</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- ===== Bubbles app (balances / rewards / activity / how to earn) ===== -->
+  <div id="bubblesScreen" hidden>
   <!-- ===== Balances tab ===== -->
   <div class="view" id="view-balances">
     <section class="summary" id="summary"></section>
@@ -745,10 +829,14 @@
     <div id="activityList"></div>
   </div>
 
-  <!-- ===== Checklist tab ===== -->
-  <div class="view" id="view-checklist" hidden>
-    <h2 class="section" id="checklistHeading">End-of-day checklist</h2>
-    <div id="checklistBody"></div>
+  </div><!-- /bubblesScreen -->
+
+  <!-- ===== Closing Checklist app ===== -->
+  <div id="checklistScreen" hidden>
+    <div class="view" id="view-checklist">
+      <h2 class="section" id="checklistHeading">Closing Checklist</h2>
+      <div id="checklistBody"></div>
+    </div>
   </div>
 
 </div>
@@ -765,9 +853,6 @@
   </button>
   <button class="navbtn" data-view="earn">
     <span class="navicon">＋</span><span>How to earn</span>
-  </button>
-  <button class="navbtn" data-view="checklist" id="navChecklist">
-    <span class="navicon">📋</span><span>Checklist</span>
   </button>
 </nav>
 
@@ -1067,7 +1152,8 @@ const state = {
   approved: [],     // manager: approved, awaiting hand-out
   search: "",
   activeIdx: null,  // index of employee in dialog
-  view: "balances", // balances | rewards | earn
+  screen: "home",   // home | bubbles | checklist (top-level app screen)
+  view: "balances", // balances | rewards | activity | earn (Bubbles sub-tab)
   pendingRedeem: null, // reward awaiting confirm
   pendingTeam: null,   // {metric, amount} awaiting team-award confirm
   admin: { rules: [], rewards: [], employees: [], admins: [], checklistTasks: [], tab: "rules" }, // manager admin screens
@@ -1576,13 +1662,12 @@ function renderActivity() {
 
 function switchView(view) {
   state.view = view;
-  ["balances", "rewards", "activity", "earn", "checklist"].forEach(v => {
+  ["balances", "rewards", "activity", "earn"].forEach(v => {
     $("view-" + v).hidden = (v !== view);
   });
   document.querySelectorAll(".navbtn").forEach(b => {
     b.classList.toggle("active", b.dataset.view === view);
   });
-  if (view === "checklist") loadChecklist();
   render();
 }
 
@@ -1596,14 +1681,42 @@ function render() {
   updateChecklistNav();
 }
 
-// Turn the Checklist nav button red + pulsing when it's this worker's turn and
-// they haven't finished it yet.
+// Top-level app screen switch: "home" | "bubbles" | "checklist".
+function showScreen(name) {
+  state.screen = name;
+  $("homeScreen").hidden = name !== "home";
+  $("bubblesScreen").hidden = name !== "bubbles";
+  $("checklistScreen").hidden = name !== "checklist";
+  document.querySelector(".bottomnav").hidden = name !== "bubbles";
+  // The home screen has its own centered hero, so hide the duplicate top header there.
+  document.querySelector("header.top").hidden = name === "home";
+  $("homeBtn").hidden = name === "home";
+  const titles = {
+    home:      ["Action Spa Warehouse", "Pick an app to open"],
+    bubbles:   ["Bubbles", "Recognize warehouse wins"],
+    checklist: ["Closing Checklist", "End-of-day closing tasks"],
+  };
+  const t = titles[name] || titles.home;
+  $("appTitle").textContent = t[0];
+  $("appSub").textContent = t[1];
+  if (name === "checklist") loadChecklist();
+}
+
+// Open the Bubbles app on its default tab.
+function openBubbles() {
+  showScreen("bubbles");
+  switchView("balances");
+}
+
+// Highlight the Closing Checklist home tile (red border + pulse + "your turn"
+// badge) when it's this worker's turn and they haven't finished it yet.
 function updateChecklistNav() {
-  const btn = $("navChecklist");
-  if (!btn) return;
   const c = state.checklist;
   const needsAttention = !!(c && c.mine && c.status !== "completed");
-  btn.classList.toggle("alert", needsAttention);
+  const tile = $("tileChecklist");
+  if (tile) tile.classList.toggle("alert", needsAttention);
+  const badge = $("clTurnBadge");
+  if (badge) badge.hidden = !needsAttention;
 }
 
 /* ---------- End-of-day checklist ---------- */
@@ -1654,7 +1767,7 @@ async function loadChecklist() {
 // ----- Employee view -----
 function renderChecklistEmployee() {
   const body = $("checklistBody");
-  $("checklistHeading").textContent = "End-of-day checklist";
+  $("checklistHeading").textContent = "Closing Checklist";
   const c = state.checklistFull;
   let html = "";
   let interactive = false;
@@ -1796,7 +1909,7 @@ function wireRunCards(body) {
 // ----- Manager review -----
 function renderChecklistAdmin() {
   const body = $("checklistBody");
-  $("checklistHeading").textContent = "Closing checklist — review";
+  $("checklistHeading").textContent = "Closing Checklist — review";
   const data = state.checklistAdmin;
   if (!data || !data.runs || !data.runs.length) {
     body.innerHTML = `<div class="cl-banner info">No checklist activity yet.</div>`;
@@ -2204,8 +2317,8 @@ function maybeAlertChecklist() {
   const c = state.checklist;
   if (c && c.mine && c.status !== "completed" && !state.clAlerted) {
     state.clAlerted = true;
-    askConfirm("It's your turn to close up the warehouse today. Please complete the end-of-day checklist before you leave.",
-      () => switchView("checklist"), { okText: "Open checklist", hideCancel: true });
+    askConfirm("It's your turn to close up the warehouse today. Please complete the closing checklist before you leave.",
+      () => showScreen("checklist"), { okText: "Open checklist", hideCancel: true });
   }
 }
 
@@ -2256,7 +2369,7 @@ function enterApp(res) {
   $("loginOverlay").hidden = true;
   document.body.classList.remove("pre-auth");
   updateIdentityUi();
-  switchView("balances");
+  showScreen("home");
   fetchData();
 }
 
@@ -2302,7 +2415,7 @@ async function tryRestoreSession() {
     $("loginOverlay").hidden = true;
     document.body.classList.remove("pre-auth");
     updateIdentityUi();
-    switchView("balances");
+    showScreen("home");
     return true;
   } catch (e) {
     session.token = null;
@@ -2792,6 +2905,10 @@ $("teamClose").addEventListener("click", () => { $("teamAward").hidden = true; s
 document.querySelectorAll(".navbtn").forEach(btn => {
   btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
+
+$("homeBtn").addEventListener("click", () => showScreen("home"));
+$("tileBubbles").addEventListener("click", openBubbles);
+$("tileChecklist").addEventListener("click", () => showScreen("checklist"));
 
 // Admin / Manage wiring.
 $("manageBtn").addEventListener("click", openAdmin);
