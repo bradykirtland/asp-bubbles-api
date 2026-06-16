@@ -239,7 +239,9 @@ function escapeHtml(s) {
 function fmtDate(ts) {
   const d = new Date(ts);
   if (isNaN(d)) return "";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+  const opts = { month: "short", day: "numeric" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric"; // only show year for other years
+  return d.toLocaleDateString(undefined, opts) +
     " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 function num(v) { const n = parseFloat(String(v).replace(/,/g, "")); return isNaN(n) ? 0 : n; }
