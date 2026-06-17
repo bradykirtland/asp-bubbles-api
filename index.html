@@ -827,6 +827,18 @@
       <button class="ghost" id="afClear">Clear</button>
     </div>
     <div id="activityList"></div>
+
+    <div id="othersSection" hidden>
+      <h2 class="section" style="margin-top:24px;">Everyone else</h2>
+      <div class="filterbar" id="othersFilters">
+        <label for="ofName">Name</label>
+        <select id="ofName"><option value="">All names</option></select>
+        <label for="ofDate">Date</label>
+        <input type="date" id="ofDate">
+        <button class="ghost" id="ofClear">Clear</button>
+      </div>
+      <div id="othersList"></div>
+    </div>
   </div>
 
   </div><!-- /bubblesScreen -->
@@ -1164,7 +1176,8 @@ const state = {
   clAlerted: false,     // whether we've popped the "your turn" alert this load
   flagItemId: null,     // item being flagged
   checkMode: false,     // manager: when on, can tick/untick to correct; otherwise flag-only
-  activityFilter: { name: "", date: "" },  // All-activity filter
+  activityFilter: { name: "", date: "" },  // All-activity filter (manager)
+  othersFilter: { name: "", date: "" },    // "Everyone else" filter (employee Activity)
   checklistFilter: { name: "", date: "" }, // Checklist review filter
 };
 
@@ -1565,12 +1578,62 @@ function fillNameOptions(sel, names, allLabel) {
   sel.value = cur;
 }
 
+// Build activity-feed row HTML from a list of award entries. Shared by the
+// manager "All activity" feed and the employee "Everyone else" feed.
+// opts.withDelete adds the manager-only delete button.
+function activityRowsHtml(list, opts) {
+  opts = opts || {};
+  // Grey out reversal entries + their matched originals (within the shown set).
+  const cancel = {};
+  list.forEach(a => {
+    const m = String(a.Metric || "");
+    if (m.indexOf("Undo:") === 0) {
+      const key = a.Name + "|" + m.slice(5).trim() + "|" + (-(Number(a.Amount) || 0));
+      cancel[key] = (cancel[key] || 0) + 1;
+    }
+  });
+  return list.slice(0, 300).map(a => {
+    const amt = Number(a.Amount) || 0;
+    const name = escapeHtml(a.Name || "");
+    const metric = String(a.Metric || "");
+    let cancelled = false;
+    if (metric.indexOf("Undo:") === 0) {
+      cancelled = true;
+    } else {
+      const key = a.Name + "|" + metric + "|" + amt;
+      if (cancel[key] > 0) { cancel[key]--; cancelled = true; }
+    }
+    let label;
+    if (metric.indexOf("Redeemed:") === 0) {
+      label = name + " redeemed " + escapeHtml(metric.replace("Redeemed:", "").trim());
+    } else if (amt < 0) {
+      label = "Deducted " + Math.abs(amt) + " from " + name + (metric ? " — " + escapeHtml(metric) : "");
+    } else {
+      label = "Gave " + name + " " + amt + (metric ? " for " + escapeHtml(metric) : "");
+    }
+    const tag = cancelled ? ` <span class="muted" style="font-size:11px;">(reversed)</span>` : "";
+    const delBtn = (opts.withDelete && a.Id) ? `<button class="del-btn" data-del="${a.Id}" title="Delete this entry">🗑</button>` : "";
+    return `
+      <div class="txn-row${cancelled ? " cancelled" : ""}">
+        <div>
+          <div class="tlabel">${label}${tag}</div>
+          <div class="tdate">${fmtDate(a.Timestamp)}${a.By ? " · by " + escapeHtml(a.By) : ""}</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div class="tamt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
+          ${delBtn}
+        </div>
+      </div>`;
+  }).join("");
+}
+
 function renderActivity() {
   const el = $("activityList");
   const heading = $("activityHeading");
   const filters = $("activityFilters");
 
   if (session.role === "manager") {
+    $("othersSection").hidden = true;
     // Managers see a feed of ALL activity across the team, with name/date filters.
     heading.textContent = "All activity";
     filters.hidden = false;
@@ -1593,71 +1656,51 @@ function renderActivity() {
       el.innerHTML = `<div class="empty"><h3>No matches</h3><div>Nothing for that name and/or date. Tap Clear to reset.</div></div>`;
       return;
     }
-    // Grey out reversal entries + their matched originals (within the shown set).
-    const cancel = {};
-    filtered.forEach(a => {
-      const m = String(a.Metric || "");
-      if (m.indexOf("Undo:") === 0) {
-        const key = a.Name + "|" + m.slice(5).trim() + "|" + (-(Number(a.Amount) || 0));
-        cancel[key] = (cancel[key] || 0) + 1;
-      }
-    });
-    el.innerHTML = filtered.slice(0, 300).map(a => {
-      const amt = Number(a.Amount) || 0;
-      const name = escapeHtml(a.Name || "");
-      const metric = String(a.Metric || "");
-      let cancelled = false;
-      if (metric.indexOf("Undo:") === 0) {
-        cancelled = true;
-      } else {
-        const key = a.Name + "|" + metric + "|" + amt;
-        if (cancel[key] > 0) { cancel[key]--; cancelled = true; }
-      }
-      let label;
-      if (metric.indexOf("Redeemed:") === 0) {
-        label = name + " redeemed " + escapeHtml(metric.replace("Redeemed:", "").trim());
-      } else if (amt < 0) {
-        label = "Deducted " + Math.abs(amt) + " from " + name + (metric ? " — " + escapeHtml(metric) : "");
-      } else {
-        label = "Gave " + name + " " + amt + (metric ? " for " + escapeHtml(metric) : "");
-      }
-      const tag = cancelled ? ` <span class="muted" style="font-size:11px;">(reversed)</span>` : "";
-      const delBtn = a.Id ? `<button class="del-btn" data-del="${a.Id}" title="Delete this entry">🗑</button>` : "";
-      return `
-        <div class="txn-row${cancelled ? " cancelled" : ""}">
-          <div>
-            <div class="tlabel">${label}${tag}</div>
-            <div class="tdate">${fmtDate(a.Timestamp)}${a.By ? " · by " + escapeHtml(a.By) : ""}</div>
-          </div>
-          <div style="display:flex; align-items:center; gap:10px;">
-            <div class="tamt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
-            ${delBtn}
-          </div>
-        </div>`;
-    }).join("");
+    el.innerHTML = activityRowsHtml(filtered, { withDelete: true });
     el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => deleteTransaction(parseInt(b.dataset.del, 10))));
     return;
   }
 
-  // Workers see only their own transactions.
+  // ----- Employees: their own transactions on top, then everyone else's -----
   filters.hidden = true;
   heading.textContent = "Your transactions";
   if (!state.myTransactions.length) {
     el.innerHTML = `<div class="empty"><h3>No transactions yet</h3><div>Bubbles you earn, lose, or redeem will show up here.</div></div>`;
+  } else {
+    el.innerHTML = state.myTransactions.map(t => {
+      const amt = Number(t.Amount) || 0;
+      const label = escapeHtml(t.Metric || "Adjustment");
+      return `
+        <div class="txn-row">
+          <div>
+            <div class="tlabel">${label}</div>
+            <div class="tdate">${fmtDate(t.Timestamp)}</div>
+          </div>
+          <div class="tamt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
+        </div>`;
+    }).join("");
+  }
+
+  // "Everyone else" — all OTHER employees' activity, searchable by name/date.
+  const others = (state.allAwards || []).filter(a => String(a.Name || "") !== session.name);
+  $("othersSection").hidden = false;
+  const names = [...new Set(others.map(a => String(a.Name || "")).filter(Boolean))].sort();
+  fillNameOptions($("ofName"), names, "All names");
+  $("ofName").value = state.othersFilter.name;
+  $("ofDate").value = state.othersFilter.date;
+  const ol = $("othersList");
+  if (!others.length) {
+    ol.innerHTML = `<div class="empty"><h3>No team activity yet</h3><div>Awards across the team will show here.</div></div>`;
     return;
   }
-  el.innerHTML = state.myTransactions.map(t => {
-    const amt = Number(t.Amount) || 0;
-    const label = escapeHtml(t.Metric || "Adjustment");
-    return `
-      <div class="txn-row">
-        <div>
-          <div class="tlabel">${label}</div>
-          <div class="tdate">${fmtDate(t.Timestamp)}</div>
-        </div>
-        <div class="tamt ${amt < 0 ? "neg" : "pos"}">${amt > 0 ? "+" : ""}${amt.toLocaleString()}</div>
-      </div>`;
-  }).join("");
+  const fName = state.othersFilter.name;
+  const fDate = state.othersFilter.date;
+  const filteredOthers = others.filter(a =>
+    (!fName || String(a.Name || "") === fName) &&
+    (!fDate || localYMD(a.Timestamp) === fDate));
+  ol.innerHTML = filteredOthers.length
+    ? activityRowsHtml(filteredOthers, { withDelete: false })
+    : `<div class="empty"><h3>No matches</h3><div>Nothing for that name and/or date. Tap Clear to reset.</div></div>`;
 }
 
 function switchView(view) {
@@ -2942,6 +2985,13 @@ $("afDate").addEventListener("change", () => { state.activityFilter.date = $("af
 $("afClear").addEventListener("click", () => {
   state.activityFilter = { name: "", date: "" };
   $("afName").value = ""; $("afDate").value = "";
+  renderActivity();
+});
+$("ofName").addEventListener("change", () => { state.othersFilter.name = $("ofName").value; renderActivity(); });
+$("ofDate").addEventListener("change", () => { state.othersFilter.date = $("ofDate").value; renderActivity(); });
+$("ofClear").addEventListener("click", () => {
+  state.othersFilter = { name: "", date: "" };
+  $("ofName").value = ""; $("ofDate").value = "";
   renderActivity();
 });
 

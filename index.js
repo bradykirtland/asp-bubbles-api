@@ -364,14 +364,16 @@ async function getData(who) {
            WHERE r.status = 'approved'
            ORDER BY r.created_at`)
       : Promise.resolve({ rows: [] }),
-    isManager
-      ? pool.query(`
-          SELECT a.id AS "Id", a.created_at AS "Timestamp", e.name AS "Name",
-                 a.metric AS "Metric", a.amount AS "Amount", a.awarded_by AS "By"
-            FROM awards a JOIN employees e ON e.id = a.employee_id
-           ORDER BY a.created_at DESC
-           LIMIT 500`)
-      : Promise.resolve({ rows: [] }),
+    // Team activity feed — returned to EVERYONE now (employees see an
+    // "Everyone else" section in Activity). This is the same non-sensitive data
+    // already shown on the public /tv display. Only managers render delete
+    // buttons (and deleteAward is manager-gated server-side).
+    pool.query(`
+      SELECT a.id AS "Id", a.created_at AS "Timestamp", e.name AS "Name",
+             a.metric AS "Metric", a.amount AS "Amount", a.awarded_by AS "By"
+        FROM awards a JOIN employees e ON e.id = a.employee_id
+       ORDER BY a.created_at DESC
+       LIMIT 500`),
   ]);
 
   const checklist = await checklistSummary(who);
