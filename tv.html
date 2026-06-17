@@ -177,6 +177,27 @@
   .cl-tv-status { font-size:16px; font-weight:700; white-space:nowrap; }
   .cl-tv-status.done { color:var(--good); }
   .cl-tv-status.miss { color:var(--danger); }
+
+  /* ---------- Home launcher (read-only) ---------- */
+  nav.tabs[hidden] { display: none; }
+  header.top .brand[hidden] { display: none; }
+  header.top .meta { margin-left: auto; }
+  .tv-homebtn { font: inherit; font-size: 20px; font-weight: 700; color: var(--accent); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 22px; cursor: pointer; box-shadow: var(--shadow-card); }
+  .tv-homebtn:hover { background: var(--accent-soft); }
+  .tv-home { max-width: 1000px; margin: 0 auto; text-align: center; padding-top: 40px; }
+  .tv-herologo { width: 104px; height: 104px; border-radius: 26px; box-shadow: var(--shadow-card); }
+  .tv-herotitle { font-size: 46px; font-weight: 900; letter-spacing: -0.02em; margin-top: 18px; }
+  .tv-herosub { font-size: 20px; color: var(--muted); margin-top: 6px; }
+  .tv-tiles { display: flex; gap: 28px; justify-content: center; flex-wrap: wrap; margin-top: 48px; }
+  .tv-tile { width: 320px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-card); padding: 36px 28px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 16px; font: inherit; color: inherit; transition: border-color .15s, transform .06s; }
+  .tv-tile:hover { border-color: var(--accent); }
+  .tv-tile:active { transform: translateY(1px); }
+  .tv-tile .ic { width: 88px; height: 88px; border-radius: 22px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 46px; }
+  .tv-tile .ic img { width: 88px; height: 88px; border-radius: 22px; display: block; }
+  .tv-tile .tname { font-size: 30px; font-weight: 800; }
+  .tv-tile .tdesc { font-size: 18px; color: var(--muted); }
+  .tv-tile.soon { opacity: 0.5; cursor: default; }
+  .tv-tile.soon:hover { border-color: var(--border); }
 </style>
 </head>
 <body>
@@ -195,13 +216,14 @@
 
 <div class="app">
   <header class="top">
-    <div class="brand">
+    <div class="brand" hidden>
       <img src="logo.svg" alt="Action Spa Warehouse">
       <div>
-        <h1>Action Spa Warehouse</h1>
-        <div class="sub">Live leaderboard</div>
+        <h1 id="tvTitle">Action Spa Warehouse</h1>
+        <div class="sub" id="tvSub">Live leaderboard</div>
       </div>
     </div>
+    <button class="tv-homebtn" id="tvHome" hidden>⌂ Home</button>
     <div class="meta">
       <div class="clock" id="clock">—</div>
       <div class="live" id="livePill"><span class="dot"></span><span id="liveText">Connecting…</span></div>
@@ -209,38 +231,63 @@
   </header>
 
   <main>
-    <!-- Leaderboard -->
-    <div class="view" id="view-board">
-      <h2 class="section">Leaderboard</h2>
-      <div class="board" id="board">
-        <div class="empty"><h3>Loading…</h3><div>Fetching the latest standings.</div></div>
+    <!-- Home launcher (read-only) -->
+    <div id="homeScreen">
+      <div class="tv-home">
+        <img class="tv-herologo" src="logo.svg" alt="Action Spa Warehouse">
+        <div class="tv-herotitle">Action Spa Warehouse</div>
+        <div class="tv-herosub">Tap an app to view</div>
+        <div class="tv-tiles">
+          <button class="tv-tile" id="tileBubbles">
+            <span class="ic"><img src="bubbles-icon.png" alt=""></span>
+            <span class="tname">Bubbles</span>
+            <span class="tdesc">Leaderboard &amp; activity</span>
+          </button>
+          <button class="tv-tile" id="tileChecklist">
+            <span class="ic">📋</span>
+            <span class="tname">Closing Checklist</span>
+            <span class="tdesc">End-of-day tasks</span>
+          </button>
+          <div class="tv-tile soon">
+            <span class="ic">📦</span>
+            <span class="tname">Box Tracker</span>
+            <span class="tdesc">Coming soon</span>
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- Activity -->
-    <div class="view" id="view-activity" hidden>
-      <h2 class="section">Recent activity</h2>
-      <div class="feed" id="feed"></div>
+    <!-- Bubbles (leaderboard / activity / how to earn) -->
+    <div id="bubblesScreen" hidden>
+      <div class="view" id="view-board">
+        <h2 class="section">Leaderboard</h2>
+        <div class="board" id="board">
+          <div class="empty"><h3>Loading…</h3><div>Fetching the latest standings.</div></div>
+        </div>
+      </div>
+      <div class="view" id="view-activity" hidden>
+        <h2 class="section">Recent activity</h2>
+        <div class="feed" id="feed"></div>
+      </div>
+      <div class="view" id="view-earn" hidden>
+        <h2 class="section">How to earn bubbles</h2>
+        <div class="earn-grid" id="earn"></div>
+      </div>
     </div>
 
-    <!-- How to earn -->
-    <div class="view" id="view-earn" hidden>
-      <h2 class="section">How to earn bubbles</h2>
-      <div class="earn-grid" id="earn"></div>
-    </div>
-
-    <!-- Checklist (read-only) -->
-    <div class="view" id="view-checklist" hidden>
-      <h2 class="section">End-of-day checklist</h2>
-      <div id="clBody"></div>
+    <!-- Closing Checklist (read-only) -->
+    <div id="checklistScreen" hidden>
+      <div class="view" id="view-checklist">
+        <h2 class="section">Closing Checklist</h2>
+        <div id="clBody"></div>
+      </div>
     </div>
   </main>
 
-  <nav class="tabs">
+  <nav class="tabs" id="tabs" hidden>
     <button class="tab active" data-view="board"><span class="ticon">★</span><span>Leaderboard</span></button>
     <button class="tab" data-view="activity"><span class="ticon">🧾</span><span>Activity</span></button>
     <button class="tab" data-view="earn"><span class="ticon">＋</span><span>How to earn</span></button>
-    <button class="tab" data-view="checklist"><span class="ticon">📋</span><span>Checklist</span></button>
   </nav>
 </div>
 
@@ -255,7 +302,7 @@ const REFRESH_MS = 20000;   // re-pull data every 20s
 const STALE_MS   = 70000;   // if no successful pull in this long, show "reconnecting"
 
 /* ===== State ===== */
-const state = { balances: [], rules: [], activity: [], checklist: null, view: "board", lastOk: 0 };
+const state = { balances: [], rules: [], activity: [], checklist: null, screen: "home", view: "board", lastOk: 0 };
 const $ = (id) => document.getElementById(id);
 
 /* ===== Helpers ===== */
@@ -440,12 +487,35 @@ function render() {
 /* ===== Tabs ===== */
 function switchView(view) {
   state.view = view;
-  ["board", "activity", "earn", "checklist"].forEach(v => { $("view-" + v).hidden = (v !== view); });
+  ["board", "activity", "earn"].forEach(v => { $("view-" + v).hidden = (v !== view); });
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   // Reset scroll position when switching tabs so the top is always visible.
   document.querySelector("main").scrollTop = 0;
 }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
+
+// Top-level read-only screens: home launcher | bubbles | checklist. No login.
+function showScreen(name) {
+  state.screen = name;
+  $("homeScreen").hidden = name !== "home";
+  $("bubblesScreen").hidden = name !== "bubbles";
+  $("checklistScreen").hidden = name !== "checklist";
+  $("tabs").hidden = name !== "bubbles";
+  $("tvHome").hidden = name === "home";
+  document.querySelector("header.top .brand").hidden = name === "home";
+  const titles = {
+    home:      ["Action Spa Warehouse", "Tap an app to view"],
+    bubbles:   ["Action Spa Warehouse", "Live leaderboard"],
+    checklist: ["Closing Checklist", "End-of-day tasks"],
+  };
+  const t = titles[name] || titles.home;
+  $("tvTitle").textContent = t[0];
+  $("tvSub").textContent = t[1];
+  document.querySelector("main").scrollTop = 0;
+}
+$("tvHome").addEventListener("click", () => showScreen("home"));
+$("tileBubbles").addEventListener("click", () => { showScreen("bubbles"); switchView("board"); });
+$("tileChecklist").addEventListener("click", () => showScreen("checklist"));
 
 /* ===== Clock + live indicator ===== */
 function tick() {
@@ -484,6 +554,7 @@ async function fetchData() {
 }
 
 /* ===== Boot ===== */
+showScreen("home");
 tick();
 setInterval(tick, 1000);
 fetchData();
