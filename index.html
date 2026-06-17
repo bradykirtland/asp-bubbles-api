@@ -563,6 +563,11 @@
   .bc-tab { flex:1; padding:11px; font-weight:600; border:1px solid var(--border); background:var(--surface); border-radius:10px; color:var(--muted); cursor:pointer; }
   .bc-tab.active { color:#fff; background:var(--accent); border-color:var(--accent); }
   .bc-hint { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .bc-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+  .bc-search { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); }
+  .bc-search input { width:46px; padding:8px; text-align:center; border:1px solid var(--border); border-radius:8px; font-family:inherit; font-size:15px; min-width:0; }
+  .bc-x { color:var(--muted); }
+  .bc-controls select { flex:1; min-width:160px; }
   .bc-row { display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 14px; margin-bottom:8px; box-shadow:var(--shadow); }
   .bc-row.low { border-color:#fde68a; background:#fffbeb; }
   .bc-row.out { border-color:#fecaca; background:#fff1f2; }
@@ -883,6 +888,22 @@
     <div class="bc-tabs">
       <button class="bc-tab active" data-bctab="count">Count</button>
       <button class="bc-tab" data-bctab="sizes">Sizes &amp; inventory</button>
+    </div>
+    <div class="bc-controls">
+      <div class="bc-search">
+        <span>Find</span>
+        <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="l" placeholder="L" aria-label="Length">
+        <span class="bc-x">×</span>
+        <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="w" placeholder="W" aria-label="Width">
+        <span class="bc-x">×</span>
+        <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="h" placeholder="H" aria-label="Height">
+        <button class="ghost" id="bcSearchClear">Clear</button>
+      </div>
+      <select id="bcSort" aria-label="Sort">
+        <option value="default">Sort: by size</option>
+        <option value="low">Lowest count first</option>
+        <option value="high">Highest count first</option>
+      </select>
     </div>
     <div id="bcCountView">
       <div class="bc-hint">Count every box size, then tap Save. Saving updates the stock to your new count, and flags any size at or below its low alert.</div>
@@ -1226,6 +1247,8 @@ const state = {
   boxSizes: [],            // Box Counter: sizes + inventory + thresholds
   boxTab: "count",         // Box Counter active tab: count | sizes
   boxCountLocal: {},       // Box Counter: {id: countedString} during a Friday count
+  boxSearch: { l: "", w: "", h: "" }, // Box Counter dimension filter (blank = any)
+  boxSort: "default",      // Box Counter sort: default | low | high (by quantity)
 };
 
 function normalizeCatalog(rows) {
@@ -1826,6 +1849,25 @@ function bcFlagBadge(flag) {
     : flag === "low" ? `<span class="bc-flag low">Low</span>` : "";
 }
 
+// "12x9x4" -> [12, 9, 4]
+function bcParseDims(size) {
+  return String(size).toLowerCase().split("x").map(n => parseInt(n, 10));
+}
+// The sizes to show: filtered by the dimension search, then sorted by quantity.
+function bcVisibleSizes() {
+  const f = state.boxSearch;
+  let list = state.boxSizes.filter(s => {
+    const d = bcParseDims(s.size);
+    if (f.l !== "" && d[0] !== parseInt(f.l, 10)) return false;
+    if (f.w !== "" && d[1] !== parseInt(f.w, 10)) return false;
+    if (f.h !== "" && d[2] !== parseInt(f.h, 10)) return false;
+    return true;
+  });
+  if (state.boxSort === "low") list = list.slice().sort((a, b) => Number(a.quantity) - Number(b.quantity));
+  else if (state.boxSort === "high") list = list.slice().sort((a, b) => Number(b.quantity) - Number(a.quantity));
+  return list;
+}
+
 function switchBoxTab(tab) {
   state.boxTab = tab;
   $("bcCountView").hidden = tab !== "count";
@@ -1851,8 +1893,10 @@ function bcUpdateSaveBtn() {
 
 function renderBoxCount() {
   const el = $("bcCountList");
-  if (!state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>No box sizes</h3></div>`; return; }
-  el.innerHTML = state.boxSizes.map(s => {
+  if (!state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>No box sizes</h3></div>`; bcUpdateSaveBtn(); return; }
+  const list = bcVisibleSizes();
+  if (!list.length) { el.innerHTML = `<div class="empty"><div>No sizes match your search.</div></div>`; bcUpdateSaveBtn(); return; }
+  el.innerHTML = list.map(s => {
     const entered = state.boxCountLocal[s.id];
     const hasCount = entered !== undefined && entered !== "";
     const counted = hasCount ? parseInt(entered, 10) : null;
@@ -1929,7 +1973,9 @@ function renderBoxSizes() {
   const el = $("bcSizesList");
   if (!state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>No box sizes</h3></div>`; return; }
   const canManage = session.role === "manager";
-  el.innerHTML = state.boxSizes.map(s => {
+  const list = bcVisibleSizes();
+  if (!list.length) { el.innerHTML = `<div class="empty"><div>No sizes match your search.</div></div>`; return; }
+  el.innerHTML = list.map(s => {
     const flag = bcFlag(s, Number(s.quantity));
     const last = s.lastCountedAt ? "Counted " + fmtDate(s.lastCountedAt) : "Not counted yet";
     return `
@@ -3198,6 +3244,18 @@ $("tileChecklist").addEventListener("click", () => showScreen("checklist"));
 $("tileBoxCounter").addEventListener("click", () => showScreen("boxcounter"));
 document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);
+document.querySelectorAll("[data-bcsearch]").forEach(inp => inp.addEventListener("input", () => {
+  const v = inp.value.replace(/[^0-9]/g, "");
+  if (v !== inp.value) inp.value = v;
+  state.boxSearch[inp.dataset.bcsearch] = v;
+  renderBox();
+}));
+$("bcSort").addEventListener("change", () => { state.boxSort = $("bcSort").value; renderBox(); });
+$("bcSearchClear").addEventListener("click", () => {
+  state.boxSearch = { l: "", w: "", h: "" };
+  document.querySelectorAll("[data-bcsearch]").forEach(i => i.value = "");
+  renderBox();
+});
 
 // Admin / Manage wiring.
 $("manageBtn").addEventListener("click", openAdmin);
