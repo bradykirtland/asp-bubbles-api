@@ -198,6 +198,23 @@
   .tv-tile .tdesc { font-size: 18px; color: var(--muted); }
   .tv-tile.soon { opacity: 0.5; cursor: default; }
   .tv-tile.soon:hover { border-color: var(--border); }
+
+  /* ---------- Box Counter (read-only) ---------- */
+  .bc-search { display:flex; align-items:center; gap:10px; font-size:18px; color:var(--muted); margin-bottom:24px; flex-wrap:wrap; }
+  .bc-search input { width:74px; padding:10px; text-align:center; font-size:22px; border:1px solid var(--border); border-radius:10px; font-family:inherit; }
+  .bc-search button { font:inherit; font-size:16px; font-weight:600; padding:10px 18px; border:1px solid var(--border); border-radius:10px; background:var(--surface); cursor:pointer; color:var(--text); }
+  .bc-search button:hover { background:rgba(30,58,138,0.05); }
+  .bc-x { color:var(--muted); }
+  .bc-list { display:grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap:14px; align-items:start; }
+  .bc-card { display:flex; justify-content:space-between; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-card); padding:16px 20px; }
+  .bc-card.low { border-color:#fde68a; background:linear-gradient(90deg,#fffbeb,#fff 60%); }
+  .bc-card.out { border-color:#fecaca; background:linear-gradient(90deg,#fff1f2,#fff 60%); }
+  .bc-card .s { font-size:24px; font-weight:800; }
+  .bc-card .q { font-size:30px; font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums; text-align:right; }
+  .bc-card .q small { display:block; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .bc-cardflag { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:3px 9px; border-radius:99px; white-space:nowrap; }
+  .bc-cardflag.low { background:#fef3c7; color:#92400e; }
+  .bc-cardflag.out { background:var(--danger-soft); color:var(--danger); }
 </style>
 </head>
 <body>
@@ -248,11 +265,11 @@
             <span class="tname">Closing Checklist</span>
             <span class="tdesc" id="clTileDesc">End-of-day tasks</span>
           </button>
-          <div class="tv-tile soon">
+          <button class="tv-tile" id="tileBoxCounter">
             <span class="ic">📦</span>
-            <span class="tname">Box Tracker</span>
-            <span class="tdesc">Coming soon</span>
-          </div>
+            <span class="tname">Box Counter</span>
+            <span class="tdesc">Box sizes &amp; stock</span>
+          </button>
         </div>
       </div>
     </div>
@@ -282,6 +299,20 @@
         <div id="clBody"></div>
       </div>
     </div>
+
+    <!-- Box Counter (read-only: sizes + quantities, with dimension search) -->
+    <div id="boxcounterScreen" hidden>
+      <div class="bc-search">
+        <span>Find</span>
+        <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="l" placeholder="L" aria-label="Length">
+        <span class="bc-x">×</span>
+        <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="w" placeholder="W" aria-label="Width">
+        <span class="bc-x">×</span>
+        <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="h" placeholder="H" aria-label="Height">
+        <button id="bcSearchClear">Clear</button>
+      </div>
+      <div id="bcList" class="bc-list"></div>
+    </div>
   </main>
 
   <nav class="tabs" id="tabs" hidden>
@@ -302,7 +333,7 @@ const REFRESH_MS = 20000;   // re-pull data every 20s
 const STALE_MS   = 70000;   // if no successful pull in this long, show "reconnecting"
 
 /* ===== State ===== */
-const state = { balances: [], rules: [], activity: [], checklist: null, screen: "home", view: "board", lastOk: 0 };
+const state = { balances: [], rules: [], activity: [], checklist: null, boxSizes: [], boxSearch: { l: "", w: "", h: "" }, screen: "home", view: "board", lastOk: 0 };
 const $ = (id) => document.getElementById(id);
 
 /* ===== Helpers ===== */
@@ -477,11 +508,37 @@ function renderChecklist() {
   el.innerHTML = banner + groups + clHistoryHtml(c.history, c.today);
 }
 
+function renderBoxList() {
+  const el = $("bcList"); if (!el) return;
+  if (!state.boxSizes || !state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>Loading…</h3></div>`; return; }
+  const f = state.boxSearch;
+  const list = state.boxSizes.filter(s => {
+    const d = String(s.size).toLowerCase().split("x").map(n => parseInt(n, 10));
+    if (f.l !== "" && d[0] !== parseInt(f.l, 10)) return false;
+    if (f.w !== "" && d[1] !== parseInt(f.w, 10)) return false;
+    if (f.h !== "" && d[2] !== parseInt(f.h, 10)) return false;
+    return true;
+  });
+  if (!list.length) { el.innerHTML = `<div class="empty"><h3>No matches</h3><div>Nothing for that size. Tap Clear.</div></div>`; return; }
+  el.innerHTML = list.map(s => {
+    const q = num(s.quantity);
+    const flag = q === 0 ? "out" : (s.lowThreshold != null && q <= Number(s.lowThreshold) ? "low" : "");
+    const badge = flag === "out" ? `<span class="bc-cardflag out">Out</span>`
+      : flag === "low" ? `<span class="bc-cardflag low">Low</span>` : "";
+    return `<div class="bc-card ${flag}">
+      <div class="s">${escapeHtml(s.size)}</div>
+      ${badge}
+      <div class="q">${q.toLocaleString()}<small>in stock</small></div>
+    </div>`;
+  }).join("");
+}
+
 function render() {
   renderBoard();
   renderActivity();
   renderEarn();
   renderChecklist();
+  renderBoxList();
   // Show who's on closing duty today, right on the home-screen tile.
   const ct = $("clTileDesc");
   if (ct) {
@@ -511,13 +568,16 @@ function showScreen(name) {
   $("homeScreen").hidden = name !== "home";
   $("bubblesScreen").hidden = name !== "bubbles";
   $("checklistScreen").hidden = name !== "checklist";
+  $("boxcounterScreen").hidden = name !== "boxcounter";
   $("tabs").hidden = name !== "bubbles";
   $("tvHome").hidden = name === "home";
   document.querySelector("header.top .brand").hidden = name === "home";
+  if (name === "boxcounter") renderBoxList();
   const titles = {
-    home:      ["Action Spa Warehouse", "Tap an app to view"],
-    bubbles:   ["Action Spa Warehouse", "Live leaderboard"],
-    checklist: ["Closing Checklist", "End-of-day tasks"],
+    home:       ["Action Spa Warehouse", "Tap an app to view"],
+    bubbles:    ["Action Spa Warehouse", "Live leaderboard"],
+    checklist:  ["Closing Checklist", "End-of-day tasks"],
+    boxcounter: ["Box Counter", "Box sizes & stock"],
   };
   const t = titles[name] || titles.home;
   $("tvTitle").textContent = t[0];
@@ -527,6 +587,18 @@ function showScreen(name) {
 $("tvHome").addEventListener("click", () => showScreen("home"));
 $("tileBubbles").addEventListener("click", () => { showScreen("bubbles"); switchView("board"); });
 $("tileChecklist").addEventListener("click", () => showScreen("checklist"));
+$("tileBoxCounter").addEventListener("click", () => showScreen("boxcounter"));
+document.querySelectorAll("[data-bcsearch]").forEach(inp => inp.addEventListener("input", () => {
+  const v = inp.value.replace(/[^0-9]/g, "");
+  if (v !== inp.value) inp.value = v;
+  state.boxSearch[inp.dataset.bcsearch] = v;
+  renderBoxList();
+}));
+$("bcSearchClear").addEventListener("click", () => {
+  state.boxSearch = { l: "", w: "", h: "" };
+  document.querySelectorAll("[data-bcsearch]").forEach(i => i.value = "");
+  renderBoxList();
+});
 
 /* ===== Auto-rotate (unattended TV) =====
    Cycle Bubbles ↔ Closing Checklist every minute. Any tap/keypress pauses the
@@ -582,6 +654,7 @@ async function fetchData() {
     state.rules    = data.rules || [];
     state.activity = data.activity || [];
     state.checklist = data.checklist || null;
+    state.boxSizes = data.boxSizes || [];
     state.lastOk   = Date.now();
     $("livePill").classList.remove("stale");
     $("liveText").textContent = "Live";

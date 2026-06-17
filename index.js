@@ -464,11 +464,17 @@ async function getPublic() {
      ORDER BY r.run_date DESC LIMIT 7`);
   checklist.history = hist;
 
+  // Box Counter sizes + quantities (read-only for the TV).
+  const { rows: boxSizes } = await pool.query(
+    `SELECT size, quantity, low_threshold AS "lowThreshold"
+       FROM box_sizes WHERE active = true ORDER BY sort_order, id`);
+
   return {
     balances: balances.rows,
     rules: rules.rows,
     activity: activity.rows,
     checklist,
+    boxSizes,
   };
 }
 
