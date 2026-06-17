@@ -246,7 +246,7 @@
           <button class="tv-tile" id="tileChecklist">
             <span class="ic">📋</span>
             <span class="tname">Closing Checklist</span>
-            <span class="tdesc">End-of-day tasks</span>
+            <span class="tdesc" id="clTileDesc">End-of-day tasks</span>
           </button>
           <div class="tv-tile soon">
             <span class="ic">📦</span>
@@ -482,6 +482,14 @@ function render() {
   renderActivity();
   renderEarn();
   renderChecklist();
+  // Show who's on closing duty today, right on the home-screen tile.
+  const ct = $("clTileDesc");
+  if (ct) {
+    const c = state.checklist;
+    ct.textContent = (c && c.assignee)
+      ? (c.status === "completed" ? "Today: " + c.assignee + " ✓" : "Today: " + c.assignee)
+      : "End-of-day tasks";
+  }
 }
 
 /* ===== Tabs ===== */

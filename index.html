@@ -758,7 +758,7 @@
         <span class="tile-icon">📋</span>
         <span class="tile-body">
           <span class="tile-name">Closing Checklist<span class="turn-badge" id="clTurnBadge" hidden>your turn</span></span>
-          <span class="tile-desc">End-of-day closing tasks</span>
+          <span class="tile-desc" id="clTileDesc">End-of-day closing tasks</span>
         </span>
         <span class="tile-arrow">›</span>
       </button>
@@ -1762,6 +1762,13 @@ function updateChecklistNav() {
   if (tile) tile.classList.toggle("alert", needsAttention);
   const badge = $("clTurnBadge");
   if (badge) badge.hidden = !needsAttention;
+  // Show who's on closing duty today on the home-screen tile.
+  const desc = $("clTileDesc");
+  if (desc) {
+    desc.textContent = (c && c.assignee)
+      ? (c.status === "completed" ? "Today: " + c.assignee + " ✓" : "Today: " + c.assignee)
+      : "End-of-day closing tasks";
+  }
 }
 
 /* ---------- End-of-day checklist ---------- */
