@@ -558,6 +558,30 @@
   .app-tile.alert { border-color:var(--danger); }
   .app-tile.alert .tile-icon { animation: navpulse 1.2s ease-in-out infinite; }
 
+  /* Box Counter */
+  .bc-tabs { display:flex; gap:8px; margin-bottom:18px; }
+  .bc-tab { flex:1; padding:11px; font-weight:600; border:1px solid var(--border); background:var(--surface); border-radius:10px; color:var(--muted); cursor:pointer; }
+  .bc-tab.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+  .bc-hint { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .bc-row { display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 14px; margin-bottom:8px; box-shadow:var(--shadow); }
+  .bc-row.low { border-color:#fde68a; background:#fffbeb; }
+  .bc-row.out { border-color:#fecaca; background:#fff1f2; }
+  .bc-grow { flex:1; min-width:0; }
+  .bc-size { font-size:16px; font-weight:700; }
+  .bc-sub { color:var(--muted); font-size:12px; margin-top:1px; }
+  .bc-num { width:70px; padding:9px; font-size:16px; text-align:center; border:1px solid var(--border); border-radius:8px; font-family:inherit; }
+  .bc-diff { min-width:38px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; font-size:14px; color:var(--muted); }
+  .bc-diff.pos { color:var(--good); }
+  .bc-diff.neg { color:var(--danger); }
+  .bc-flag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:2px 7px; border-radius:99px; white-space:nowrap; }
+  .bc-flag.low { background:#fef3c7; color:var(--warn); }
+  .bc-flag.out { background:var(--danger-soft); color:var(--danger); }
+  .bc-field { display:flex; flex-direction:column; gap:3px; align-items:center; }
+  .bc-field label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .bc-savebar { position:sticky; bottom:0; background:linear-gradient(180deg, rgba(247,247,245,0), var(--bg) 35%); padding:14px 0 6px; }
+  .bc-savebar button { width:100%; padding:14px; font-size:16px; font-weight:700; }
+  .bc-savebar button:disabled { background:#d4d4d0; border-color:#d4d4d0; color:#8a8a85; cursor:not-allowed; }
+
   /* End-of-day checklist */
   .navbtn.alert { color: var(--danger); }
   .navbtn.alert .navicon { animation: navpulse 1.2s ease-in-out infinite; }
@@ -762,12 +786,13 @@
         </span>
         <span class="tile-arrow">›</span>
       </button>
-      <button class="app-tile disabled" id="tileBoxTracker" disabled>
+      <button class="app-tile" id="tileBoxCounter">
         <span class="tile-icon">📦</span>
         <span class="tile-body">
-          <span class="tile-name">Box Tracker <span class="badge off">soon</span></span>
-          <span class="tile-desc">Packaging box counts</span>
+          <span class="tile-name">Box Counter</span>
+          <span class="tile-desc">Friday packaging box counts</span>
         </span>
+        <span class="tile-arrow">›</span>
       </button>
       <a class="app-tile tv" href="/tv" target="_blank" rel="noopener">
         <span class="tile-icon">📺</span>
@@ -850,6 +875,23 @@
     <div class="view" id="view-checklist">
       <h2 class="section" id="checklistHeading">Closing Checklist</h2>
       <div id="checklistBody"></div>
+    </div>
+  </div>
+
+  <!-- ===== Box Counter app ===== -->
+  <div id="boxcounterScreen" hidden>
+    <div class="bc-tabs">
+      <button class="bc-tab active" data-bctab="count">Count</button>
+      <button class="bc-tab" data-bctab="sizes">Sizes &amp; inventory</button>
+    </div>
+    <div id="bcCountView">
+      <div class="bc-hint">Count every box size, then tap Save. Saving updates the stock to your new count, and flags any size at or below its low alert.</div>
+      <div id="bcCountList"></div>
+      <div class="bc-savebar"><button class="primary" id="bcSaveBtn" disabled>Save count</button></div>
+    </div>
+    <div id="bcSizesView" hidden>
+      <div class="bc-hint">Current inventory and the optional low-stock alert per size. Set a number in “Low ≤” to flag that size when stock drops to it; leave blank for no alert.</div>
+      <div id="bcSizesList"></div>
     </div>
   </div>
 
@@ -1181,6 +1223,9 @@ const state = {
   activityFilter: { name: "", date: "" },  // All-activity filter (manager)
   othersFilter: { name: "", date: "" },    // "Everyone else" filter (employee Activity)
   checklistFilter: { name: "", date: "" }, // Checklist review filter
+  boxSizes: [],            // Box Counter: sizes + inventory + thresholds
+  boxTab: "count",         // Box Counter active tab: count | sizes
+  boxCountLocal: {},       // Box Counter: {id: countedString} during a Friday count
 };
 
 function normalizeCatalog(rows) {
@@ -1732,25 +1777,189 @@ function showScreen(name) {
   $("homeScreen").hidden = name !== "home";
   $("bubblesScreen").hidden = name !== "bubbles";
   $("checklistScreen").hidden = name !== "checklist";
+  $("boxcounterScreen").hidden = name !== "boxcounter";
   document.querySelector(".bottomnav").hidden = name !== "bubbles";
   // The home screen has its own centered hero, so hide the duplicate top header there.
   document.querySelector("header.top").hidden = name === "home";
   $("homeBtn").hidden = name === "home";
   const titles = {
-    home:      ["Action Spa Warehouse", "Pick an app to open"],
-    bubbles:   ["Bubbles", "Recognize warehouse wins"],
-    checklist: ["Closing Checklist", "End-of-day closing tasks"],
+    home:       ["Action Spa Warehouse", "Pick an app to open"],
+    bubbles:    ["Bubbles", "Recognize warehouse wins"],
+    checklist:  ["Closing Checklist", "End-of-day closing tasks"],
+    boxcounter: ["Box Counter", "Friday packaging box counts"],
   };
   const t = titles[name] || titles.home;
   $("appTitle").textContent = t[0];
   $("appSub").textContent = t[1];
   if (name === "checklist") loadChecklist();
+  if (name === "boxcounter") loadBoxSizes();
 }
 
 // Open the Bubbles app on its default tab.
 function openBubbles() {
   showScreen("bubbles");
   switchView("balances");
+}
+
+/* ---------- Box Counter ---------- */
+async function loadBoxSizes() {
+  state.boxCountLocal = {};
+  $("bcCountList").innerHTML = `<div class="empty"><div>Loading…</div></div>`;
+  try {
+    const data = await apiCall("getBoxSizes", { pin: session.pin });
+    if (data.error) { $("bcCountList").innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    state.boxSizes = data.boxSizes || [];
+    renderBox();
+  } catch (err) {
+    $("bcCountList").innerHTML = `<div class="empty">Couldn't load (${escapeHtml(err && err.message ? err.message : String(err))}).</div>`;
+  }
+}
+
+// Flag state for a size given an effective quantity: "out" (0), "low" (≤ threshold), or "".
+function bcFlag(s, qty) {
+  if (qty === 0) return "out";
+  if (s.lowThreshold != null && qty <= Number(s.lowThreshold)) return "low";
+  return "";
+}
+function bcFlagBadge(flag) {
+  return flag === "out" ? `<span class="bc-flag out">Out</span>`
+    : flag === "low" ? `<span class="bc-flag low">Low</span>` : "";
+}
+
+function switchBoxTab(tab) {
+  state.boxTab = tab;
+  $("bcCountView").hidden = tab !== "count";
+  $("bcSizesView").hidden = tab !== "sizes";
+  document.querySelectorAll(".bc-tab").forEach(b => b.classList.toggle("active", b.dataset.bctab === tab));
+  renderBox();
+}
+
+function renderBox() {
+  if (state.boxTab === "sizes") renderBoxSizes(); else renderBoxCount();
+}
+
+function bcEnteredCount() {
+  return Object.keys(state.boxCountLocal)
+    .filter(k => state.boxCountLocal[k] !== "" && state.boxCountLocal[k] !== undefined).length;
+}
+function bcUpdateSaveBtn() {
+  const n = bcEnteredCount();
+  const btn = $("bcSaveBtn");
+  btn.textContent = n ? `Save count (${n} of ${state.boxSizes.length})` : "Save count";
+  btn.disabled = !n;
+}
+
+function renderBoxCount() {
+  const el = $("bcCountList");
+  if (!state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>No box sizes</h3></div>`; return; }
+  el.innerHTML = state.boxSizes.map(s => {
+    const entered = state.boxCountLocal[s.id];
+    const hasCount = entered !== undefined && entered !== "";
+    const counted = hasCount ? parseInt(entered, 10) : null;
+    const eff = hasCount ? counted : Number(s.quantity);
+    const flag = bcFlag(s, eff);
+    const diff = hasCount ? counted - Number(s.quantity) : null;
+    const diffText = diff === null ? "" : (diff > 0 ? "+" + diff : String(diff));
+    const diffCls = diff === null ? "" : (diff > 0 ? "pos" : (diff < 0 ? "neg" : ""));
+    return `
+      <div class="bc-row ${flag}" data-bcrow="${s.id}">
+        <div class="bc-grow">
+          <div class="bc-size">${escapeHtml(s.size)}</div>
+          <div class="bc-sub">In stock: ${Number(s.quantity).toLocaleString()}</div>
+        </div>
+        <span data-bcbadge="${s.id}">${bcFlagBadge(flag)}</span>
+        <div class="bc-diff ${diffCls}" data-bcdiff="${s.id}">${diffText}</div>
+        <input class="bc-num" inputmode="numeric" pattern="[0-9]*" data-bccount="${s.id}"
+               value="${hasCount ? escapeAttr(String(entered)) : ""}" placeholder="count"
+               aria-label="Count for ${escapeAttr(s.size)}">
+      </div>`;
+  }).join("");
+  el.querySelectorAll("[data-bccount]").forEach(inp => inp.addEventListener("input", () => onBoxCountInput(inp)));
+  bcUpdateSaveBtn();
+}
+
+function onBoxCountInput(inp) {
+  const id = parseInt(inp.dataset.bccount, 10);
+  const clean = inp.value.replace(/[^0-9]/g, "");
+  if (clean !== inp.value) inp.value = clean;
+  state.boxCountLocal[id] = clean;
+  const s = state.boxSizes.find(x => x.id === id);
+  const row = inp.closest(".bc-row");
+  if (!s || !row) { bcUpdateSaveBtn(); return; }
+  const hasCount = clean !== "";
+  const counted = hasCount ? parseInt(clean, 10) : null;
+  const eff = hasCount ? counted : Number(s.quantity);
+  const flag = bcFlag(s, eff);
+  row.classList.remove("low", "out");
+  if (flag) row.classList.add(flag);
+  const badge = row.querySelector(`[data-bcbadge="${id}"]`);
+  if (badge) badge.innerHTML = bcFlagBadge(flag);
+  const diffEl = row.querySelector("[data-bcdiff]");
+  if (diffEl) {
+    const diff = hasCount ? counted - Number(s.quantity) : null;
+    diffEl.textContent = diff === null ? "" : (diff > 0 ? "+" + diff : String(diff));
+    diffEl.classList.remove("pos", "neg");
+    if (diff !== null && diff > 0) diffEl.classList.add("pos");
+    else if (diff !== null && diff < 0) diffEl.classList.add("neg");
+  }
+  bcUpdateSaveBtn();
+}
+
+async function saveBoxCountNow() {
+  const counts = Object.keys(state.boxCountLocal)
+    .filter(k => state.boxCountLocal[k] !== "" && state.boxCountLocal[k] !== undefined)
+    .map(k => ({ id: parseInt(k, 10), counted: parseInt(state.boxCountLocal[k], 10) }));
+  if (!counts.length) return;
+  const btn = $("bcSaveBtn"); btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const res = await apiCall("saveBoxCount", { pin: session.pin, counts });
+    if (res.error) { alert(res.error); renderBoxCount(); return; }
+    state.boxSizes = res.boxSizes || state.boxSizes;
+    state.boxCountLocal = {};
+    renderBox();
+    if (state.boxTab === "count") { btn.textContent = "Saved ✓ — stock updated"; btn.disabled = true; }
+    setTimeout(() => { if (state.boxTab === "count") renderBoxCount(); }, 1600);
+  } catch (err) {
+    alert("Error: " + (err && err.message ? err.message : err));
+    renderBoxCount();
+  }
+}
+
+function renderBoxSizes() {
+  const el = $("bcSizesList");
+  if (!state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>No box sizes</h3></div>`; return; }
+  el.innerHTML = state.boxSizes.map(s => {
+    const flag = bcFlag(s, Number(s.quantity));
+    const last = s.lastCountedAt ? "Counted " + fmtDate(s.lastCountedAt) : "Not counted yet";
+    return `
+      <div class="bc-row ${flag}">
+        <div class="bc-grow">
+          <div class="bc-size">${escapeHtml(s.size)}</div>
+          <div class="bc-sub">${last}</div>
+        </div>
+        ${bcFlagBadge(flag)}
+        <div class="bc-field"><label>Qty</label>
+          <input class="bc-num" inputmode="numeric" pattern="[0-9]*" data-bcqty="${s.id}" value="${Number(s.quantity)}"></div>
+        <div class="bc-field"><label>Low ≤</label>
+          <input class="bc-num" inputmode="numeric" pattern="[0-9]*" data-bcthresh="${s.id}"
+                 value="${s.lowThreshold == null ? "" : Number(s.lowThreshold)}" placeholder="—"></div>
+      </div>`;
+  }).join("");
+  el.querySelectorAll("[data-bcqty]").forEach(inp =>
+    inp.addEventListener("change", () => commitBoxSize(parseInt(inp.dataset.bcqty, 10), { quantity: inp.value })));
+  el.querySelectorAll("[data-bcthresh]").forEach(inp =>
+    inp.addEventListener("change", () => commitBoxSize(parseInt(inp.dataset.bcthresh, 10), { lowThreshold: inp.value.trim() === "" ? null : inp.value.trim() })));
+}
+
+async function commitBoxSize(id, fields) {
+  try {
+    const res = await apiCall("updateBoxSize", Object.assign({ pin: session.pin, id }, fields));
+    if (res.error) { alert(res.error); }
+    if (res.boxSizes) state.boxSizes = res.boxSizes;
+    renderBox();
+  } catch (err) {
+    alert("Error: " + (err && err.message ? err.message : err));
+  }
 }
 
 // Highlight the Closing Checklist home tile (red border + pulse + "your turn"
@@ -2968,6 +3177,9 @@ document.querySelectorAll(".navbtn").forEach(btn => {
 $("homeBtn").addEventListener("click", () => showScreen("home"));
 $("tileBubbles").addEventListener("click", openBubbles);
 $("tileChecklist").addEventListener("click", () => showScreen("checklist"));
+$("tileBoxCounter").addEventListener("click", () => showScreen("boxcounter"));
+document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
+$("bcSaveBtn").addEventListener("click", saveBoxCountNow);
 
 // Admin / Manage wiring.
 $("manageBtn").addEventListener("click", openAdmin);

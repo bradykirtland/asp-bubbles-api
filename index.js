@@ -144,6 +144,34 @@ async function ensureSchema() {
     console.log('Schema: seeded 16 checklist tasks.');
   }
 
+  // Box Counter: packaging box sizes with current inventory + optional per-size
+  // low threshold. The Friday count overwrites quantity (a weekly cycle count).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS box_sizes (
+      id              SERIAL PRIMARY KEY,
+      size            TEXT NOT NULL UNIQUE,
+      quantity        INTEGER NOT NULL DEFAULT 0,
+      low_threshold   INTEGER,
+      sort_order      INTEGER NOT NULL DEFAULT 0,
+      last_counted_at TIMESTAMPTZ,
+      active          BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  const { rows: bsc } = await pool.query('SELECT COUNT(*)::int AS n FROM box_sizes');
+  if (bsc[0].n === 0) {
+    await pool.query(`
+      INSERT INTO box_sizes (size, quantity, sort_order) VALUES
+        ('5x5x4', 24, 10), ('6x6x6', 5, 20), ('8x6x4', 4, 30), ('8x6x6', 13, 40),
+        ('8x8x8', 5, 50), ('10x6x4', 0, 60), ('12x6x6', 4, 70), ('12x9x3', 1, 80),
+        ('12x9x4', 2, 90), ('12x9x7', 6, 100), ('12x10x10', 0, 110), ('12x12x12', 5, 120),
+        ('14x6x4', 0, 130), ('16x12x8', 5, 140), ('16x16x6', 10, 150), ('16x16x10', 1, 160),
+        ('16x16x16', 23, 170), ('18x6x6', 14, 180), ('20x5x5', 10, 190), ('20x8x8', 1, 200),
+        ('20x10x6', 6, 210), ('20x16x8', 5, 220), ('20x18x4', 1, 230), ('20x20x4', 6, 240),
+        ('24x6x6', 7, 250), ('26x12x12', 8, 260), ('28x12x6', 7, 270), ('28x18x6', 2, 280),
+        ('29x17x7', 29, 290), ('29x17x12', 4, 300), ('32x17x16', 3, 310)`);
+    console.log('Schema: seeded 31 box sizes.');
+  }
+
   // Clean up any not-yet-completed runs that landed on a closed day (e.g. a
   // Sunday run created before this rule existed). Leaves completed history alone.
   if (CLOSED_DOWS.length) {
@@ -1283,6 +1311,55 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, app: 'action-spa-warehouse' });
 });
 
+/* ---------- Box Counter ---------- */
+// Any signed-in user can view, count, and set thresholds.
+async function getBoxSizes(who) {
+  if (!who) return { error: 'Not authorized' };
+  const { rows } = await pool.query(
+    `SELECT id, size, quantity, low_threshold AS "lowThreshold",
+            sort_order AS "sortOrder", last_counted_at AS "lastCountedAt"
+       FROM box_sizes WHERE active = true ORDER BY sort_order, id`);
+  return { boxSizes: rows };
+}
+
+// Save a Friday count: each provided count becomes the new current inventory.
+async function saveBoxCount(who, body) {
+  if (!who) return { error: 'Not authorized' };
+  const counts = Array.isArray(body && body.counts) ? body.counts : [];
+  let saved = 0;
+  for (const c of counts) {
+    const id = parseInt(c && c.id, 10);
+    const q = parseInt(c && c.counted, 10);
+    if (!Number.isFinite(id) || !Number.isFinite(q) || q < 0) continue;
+    await pool.query(
+      'UPDATE box_sizes SET quantity = $1, last_counted_at = now() WHERE id = $2 AND active = true',
+      [q, id]);
+    saved++;
+  }
+  const data = await getBoxSizes(who);
+  data.saved = saved;
+  return data;
+}
+
+// Edit a size's current quantity and/or its low threshold (null clears it).
+async function updateBoxSize(who, body) {
+  if (!who) return { error: 'Not authorized' };
+  const id = parseInt(body && body.id, 10);
+  if (!Number.isFinite(id)) return { error: 'Bad id.' };
+  if (body && 'lowThreshold' in body) {
+    let t = body.lowThreshold;
+    t = (t === null || t === '') ? null : parseInt(t, 10);
+    if (t !== null && (!Number.isFinite(t) || t < 0)) return { error: 'Threshold must be 0 or more.' };
+    await pool.query('UPDATE box_sizes SET low_threshold = $1 WHERE id = $2', [t, id]);
+  }
+  if (body && 'quantity' in body) {
+    const q = parseInt(body.quantity, 10);
+    if (!Number.isFinite(q) || q < 0) return { error: 'Quantity must be 0 or more.' };
+    await pool.query('UPDATE box_sizes SET quantity = $1 WHERE id = $2', [q, id]);
+  }
+  return await getBoxSizes(who);
+}
+
 app.post('/', async (req, res) => {
   let body;
   try {
@@ -1342,6 +1419,10 @@ app.post('/', async (req, res) => {
         case 'updateChecklistTask':  out = await updateChecklistTask(who, body.task); break;
         case 'setChecklistTaskActive': out = await setChecklistTaskActive(who, body.id, body.active); break;
         case 'resetChecklist':       out = await resetChecklist(who); break;
+        // ----- Box Counter -----
+        case 'getBoxSizes':   out = await getBoxSizes(who); break;
+        case 'saveBoxCount':  out = await saveBoxCount(who, body); break;
+        case 'updateBoxSize': out = await updateBoxSize(who, body); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
