@@ -593,6 +593,8 @@
   .cl-runhead:hover { background:#faf9f6; }
   .cl-runhead .cl-rh-l { font-weight:600; font-size:14px; }
   .cl-runhead .cl-rh-sub { color:var(--muted); font-size:12px; margin-top:2px; }
+  .cl-rh-r { display:flex; align-items:center; gap:10px; }
+  .cl-caret { color:var(--muted); font-size:13px; line-height:1; width:12px; text-align:center; }
   .cl-runbody { border-top:1px solid var(--border); padding:8px 16px 12px; }
   .cl-runbody[hidden] { display:none; }
   .cl-status { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:2px 9px; border-radius:99px; white-space:nowrap; }
@@ -1903,7 +1905,7 @@ function runCardsHtml(runs, today, opts) {
     if (r.status !== "completed" && today && r.run_date < today) { statusClass = "missed"; statusLabel = "Not completed"; }
     const flaggedCount = r.items.filter(it => it.flagged).length;
     const checkedCount = r.items.filter(it => it.checked).length;
-    const open = i === 0;
+    const open = false;   // collapsed by default — click the header to expand
     return `
       <div class="cl-run">
         <div class="cl-runhead" data-run="${r.id}">
@@ -1911,7 +1913,10 @@ function runCardsHtml(runs, today, opts) {
             <div class="cl-rh-l">${fmtRunDate(r.run_date)} — ${escapeHtml(r.assignee || "Unassigned")}</div>
             <div class="cl-rh-sub">${checkedCount}/${r.items.length} checked${flaggedCount ? " · " + flaggedCount + " flagged" : ""}</div>
           </div>
-          <span class="cl-status ${statusClass}">${statusLabel}</span>
+          <div class="cl-rh-r">
+            <span class="cl-status ${statusClass}">${statusLabel}</span>
+            <span class="cl-caret">${open ? "▾" : "▸"}</span>
+          </div>
         </div>
         <div class="cl-runbody" id="clrun-${r.id}" ${open ? "" : "hidden"}>
           ${r.items.length ? groupByCategory(r.items).map(g => `
@@ -1934,6 +1939,7 @@ function runCardsHtml(runs, today, opts) {
 function wireRunCards(body) {
   body.querySelectorAll(".cl-runhead").forEach(h => h.addEventListener("click", () => {
     const rb = $("clrun-" + h.dataset.run); if (rb) rb.hidden = !rb.hidden;
+    const car = h.querySelector(".cl-caret"); if (car) car.textContent = (rb && !rb.hidden) ? "▾" : "▸";
   }));
   body.querySelectorAll("[data-correct]").forEach(cb => cb.addEventListener("click", (e) => {
     e.stopPropagation();

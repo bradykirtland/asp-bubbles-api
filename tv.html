@@ -248,7 +248,9 @@
 /* ===== Config ===== */
 // Absolute URL so this page works whether it's served from Railway (/tv) or
 // from GitHub Pages. No PIN is ever sent — this is the public read endpoint.
-const API_URL = "https://asp-bubbles-api-production.up.railway.app/";
+// Same-origin: the TV is served by this same app at /tv, so a relative URL
+// always works — even if the Railway service (and its public URL) is renamed.
+const API_URL = "/";
 const REFRESH_MS = 20000;   // re-pull data every 20s
 const STALE_MS   = 70000;   // if no successful pull in this long, show "reconnecting"
 
