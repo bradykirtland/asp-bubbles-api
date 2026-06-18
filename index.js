@@ -1329,6 +1329,31 @@ async function getBoxSizes(who) {
 }
 
 // Save a Friday count: each provided count becomes the new current inventory.
+// Email the manager about box sizes now at/below their low threshold. No-op
+// unless email is configured (RESEND_API_KEY + MANAGER_EMAIL). Only sizes that
+// HAVE a low threshold set are alerted — that threshold is the "certain quantity".
+async function emailLowStock() {
+  const { rows } = await pool.query(
+    `SELECT size, quantity, low_threshold
+       FROM box_sizes
+      WHERE active = true AND low_threshold IS NOT NULL AND quantity <= low_threshold
+      ORDER BY quantity, sort_order, id`);
+  if (!rows.length) return;
+  const lines = rows.map(r => {
+    const q = Number(r.quantity);
+    return q === 0
+      ? `• ${r.size} — OUT of stock (alert set at ${r.low_threshold} or below)`
+      : `• ${r.size} — ${q} left (alert set at ${r.low_threshold} or below)`;
+  });
+  const n = rows.length;
+  await notifyManager(
+    `Box Counter: ${n} box size${n === 1 ? '' : 's'} low on stock`,
+    `After the latest box count, these packaging box sizes are at or below their low alert:\n\n`
+      + lines.join('\n')
+      + `\n\nReorder as needed. (Set or change a size's low alert in the app: Box Counter → Sizes & inventory.)`
+  );
+}
+
 async function saveBoxCount(who, body) {
   if (!who) return { error: 'Not authorized' };
   const counts = Array.isArray(body && body.counts) ? body.counts : [];
@@ -1342,6 +1367,7 @@ async function saveBoxCount(who, body) {
       [q, id]);
     saved++;
   }
+  if (saved) { try { await emailLowStock(); } catch (e) { console.warn('low-stock email failed:', e && e.message); } }
   const data = await getBoxSizes(who);
   data.saved = saved;
   return data;
