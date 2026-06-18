@@ -7,6 +7,7 @@
 //   MANAGER_PIN     6-digit PIN for manager-only actions (required)
 //   MANAGER_EMAIL   where manager notifications go (optional)
 //   RESEND_API_KEY  if set, emails are sent via Resend; otherwise logged-only
+//   GMAIL_USER / GMAIL_APP_PASSWORD  if set, the Box Counter low-stock alert is sent via Gmail
 //   PORT            Railway sets this automatically
 
 import express from 'express';
@@ -14,6 +15,7 @@ import cors from 'cors';
 import pg from 'pg';
 import path from 'path';
 import crypto from 'node:crypto';
+import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +26,8 @@ const DATABASE_URL  = process.env.DATABASE_URL;
 const MANAGER_PIN   = process.env.MANAGER_PIN || '1234';
 const MANAGER_EMAIL = process.env.MANAGER_EMAIL || '';
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const GMAIL_USER = process.env.GMAIL_USER || '';
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -303,6 +307,29 @@ async function sendResend(to, subject, body) {
     if (!r.ok) console.warn('Resend error:', r.status, await r.text());
   } catch (e) {
     console.warn('Resend exception:', e);
+  }
+}
+
+// Gmail SMTP (app password). Used for the Box Counter low-stock alert so it can
+// send without any domain/DNS setup. No-op unless GMAIL_USER + GMAIL_APP_PASSWORD are set.
+let gmailTransport = null;
+function getGmailTransport() {
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) return null;
+  if (!gmailTransport) {
+    gmailTransport = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+    });
+  }
+  return gmailTransport;
+}
+async function sendGmail(to, subject, body) {
+  const t = getGmailTransport();
+  if (!t || !to) { console.log(`[gmail skipped — not configured] ${subject}`); return; }
+  try {
+    await t.sendMail({ from: `Action Spa Warehouse <${GMAIL_USER}>`, to, subject, text: body });
+  } catch (e) {
+    console.warn('Gmail send error:', e && e.message);
   }
 }
 
@@ -1346,12 +1373,13 @@ async function emailLowStock() {
       : `• ${r.size} — ${q} left (alert set at ${r.low_threshold} or below)`;
   });
   const n = rows.length;
-  await notifyManager(
-    `Box Counter: ${n} box size${n === 1 ? '' : 's'} low on stock`,
-    `After the latest box count, these packaging box sizes are at or below their low alert:\n\n`
-      + lines.join('\n')
-      + `\n\nReorder as needed. (Set or change a size's low alert in the app: Box Counter → Sizes & inventory.)`
-  );
+  const subject = `Box Counter: ${n} box size${n === 1 ? '' : 's'} low on stock`;
+  const body = `After the latest box count, these packaging box sizes are at or below their low alert:\n\n`
+    + lines.join('\n')
+    + `\n\nReorder as needed. (Set or change a size's low alert in the app: Box Counter → Sizes & inventory.)`;
+  // Prefer Gmail (the chosen path); fall back to Resend/log if Gmail isn't configured.
+  if (GMAIL_USER && GMAIL_APP_PASSWORD && MANAGER_EMAIL) await sendGmail(MANAGER_EMAIL, subject, body);
+  else await notifyManager(subject, body);
 }
 
 async function saveBoxCount(who, body) {
