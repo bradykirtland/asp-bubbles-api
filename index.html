@@ -593,6 +593,19 @@
   .bc-disx { border:none; background:none; cursor:pointer; font-size:15px; color:var(--muted); padding:4px 7px; line-height:1; }
   .bc-disx:hover { color:var(--danger); }
 
+  /* Employee of the Month */
+  .eom-list { display:flex; flex-direction:column; gap:10px; margin:8px 0 14px; }
+  .eom-pick { width:100%; text-align:left; padding:16px 18px; font-size:17px; font-weight:600; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); cursor:pointer; }
+  .eom-pick:hover { border-color:var(--accent); background:var(--accent-soft); }
+  .eom-winner { text-align:center; background:linear-gradient(180deg,#fffbeb,#fff 70%); border:1px solid #fde68a; border-radius:var(--radius); box-shadow:var(--shadow-card); padding:28px 20px; margin-bottom:16px; font-size:40px; line-height:1; }
+  .eom-winner .eom-wlabel { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:700; margin-top:10px; }
+  .eom-winner .eom-wname { font-size:28px; font-weight:800; color:var(--text); margin-top:4px; letter-spacing:-0.01em; }
+  .eom-winner .eom-wvotes { font-size:14px; color:var(--muted); font-weight:600; margin-top:3px; }
+  .eom-tally { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:6px 16px; }
+  .eom-trow { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px dashed var(--border); font-size:15px; }
+  .eom-trow:last-child { border-bottom:none; }
+  .eom-trow strong { color:var(--accent); font-variant-numeric:tabular-nums; }
+
   /* End-of-day checklist */
   .navbtn.alert { color: var(--danger); }
   .navbtn.alert .navicon { animation: navpulse 1.2s ease-in-out infinite; }
@@ -805,6 +818,14 @@
         </span>
         <span class="tile-arrow">›</span>
       </button>
+      <button class="app-tile" id="tileEom">
+        <span class="tile-icon">🏆</span>
+        <span class="tile-body">
+          <span class="tile-name">Employee of the Month</span>
+          <span class="tile-desc">Vote for a coworker</span>
+        </span>
+        <span class="tile-arrow">›</span>
+      </button>
       <a class="app-tile tv" href="/tv" target="_blank" rel="noopener">
         <span class="tile-icon">📺</span>
         <span class="tile-body">
@@ -927,6 +948,11 @@
       <div class="bc-hint">Current inventory and the optional low-stock alert per size. Set a number in “Low ≤” to flag that size when stock drops to it; leave blank for no alert.</div>
       <div id="bcSizesList"></div>
     </div>
+  </div>
+
+  <!-- ===== Employee of the Month app ===== -->
+  <div id="eomScreen" hidden>
+    <div id="eomBody"></div>
   </div>
 
 </div>
@@ -1264,6 +1290,7 @@ const state = {
   boxSort: "default",      // Box Counter sort: default | low | high (by quantity)
   boxMeta: null,           // Box Counter Friday/count status from the server
   earnFilter: "",          // How-to-earn category filter
+  eom: null,               // Employee of the Month voting data
 };
 
 function normalizeCatalog(rows) {
@@ -1825,6 +1852,7 @@ function showScreen(name) {
   $("bubblesScreen").hidden = name !== "bubbles";
   $("checklistScreen").hidden = name !== "checklist";
   $("boxcounterScreen").hidden = name !== "boxcounter";
+  $("eomScreen").hidden = name !== "eom";
   document.querySelector(".bottomnav").hidden = name !== "bubbles";
   // The home screen has its own centered hero, so hide the duplicate top header there.
   document.querySelector("header.top").hidden = name === "home";
@@ -1834,12 +1862,14 @@ function showScreen(name) {
     bubbles:    ["Bubbles", "Recognize warehouse wins"],
     checklist:  ["Closing Checklist", "End-of-day closing tasks"],
     boxcounter: ["Box Counter", "Friday packaging box counts"],
+    eom:        ["Employee of the Month", "Vote for a coworker"],
   };
   const t = titles[name] || titles.home;
   $("appTitle").textContent = t[0];
   $("appSub").textContent = t[1];
   if (name === "checklist") loadChecklist();
   if (name === "boxcounter") loadBoxSizes();
+  if (name === "eom") loadEom();
 }
 
 // Open the Bubbles app on its default tab.
@@ -2096,6 +2126,74 @@ async function toggleDisregard(id, value) {
 function disregardFromCount(id, size) {
   askConfirm(`Disregard ${size}? It won't need to be counted. You can bring it back under "Sizes & inventory".`,
     () => toggleDisregard(id, true), { okText: "Disregard" });
+}
+
+/* ---------- Employee of the Month ---------- */
+async function loadEom() {
+  $("eomBody").innerHTML = `<div class="empty"><div>Loading…</div></div>`;
+  try {
+    const data = await apiCall("getEom", { pin: session.pin });
+    if (data.error) { $("eomBody").innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    state.eom = data;
+    renderEom();
+  } catch (err) {
+    $("eomBody").innerHTML = `<div class="empty">Couldn't load (${escapeHtml(err && err.message ? err.message : String(err))}).</div>`;
+  }
+}
+
+function eomTallyHtml(tally) {
+  if (!tally.length) return `<div class="cl-meta">No votes yet.</div>`;
+  return `<div class="eom-tally">` + tally.map(t =>
+    `<div class="eom-trow"><span>${escapeHtml(t.name)}</span><strong>${t.votes}</strong></div>`).join("") + `</div>`;
+}
+
+function renderEom() {
+  const el = $("eomBody");
+  const e = state.eom;
+  if (!e) { el.innerHTML = `<div class="empty"><div>Loading…</div></div>`; return; }
+  let html = "";
+  if (e.votingOpen) {
+    html += `<div class="cl-banner">Vote for <strong>${escapeHtml(e.awardLabel)}</strong> Employee of the Month — one vote each, and it's final once you pick. Voting closes <strong>${escapeHtml(fmtRunDate(e.closesOn))}</strong>.</div>`;
+    if (!e.canVote) {
+      html += `<div class="cl-meta">${e.progress.voted} of ${e.progress.total} employees have voted.</div>` + eomTallyHtml(e.tally);
+    } else if (e.mine.voted) {
+      html += `<div class="cl-banner done">✓ You voted for <strong>${escapeHtml(e.mine.choice)}</strong>. The winner is revealed after voting closes.</div>`;
+      html += `<div class="cl-meta">${e.progress.voted} of ${e.progress.total} have voted.</div>`;
+    } else {
+      const others = e.candidates.filter(n => n !== e.voterName);
+      html += `<div class="eom-list">` + others.map(n =>
+        `<button class="eom-pick" data-eom="${escapeAttr(n)}">${escapeHtml(n)}</button>`).join("") + `</div>`;
+      html += `<div class="cl-meta">${e.progress.voted} of ${e.progress.total} have voted.</div>`;
+    }
+  } else {
+    if (e.lastResult) {
+      html += `<div class="eom-winner">🏆
+        <div class="eom-wlabel">${escapeHtml(e.lastResult.label)} Employee of the Month</div>
+        <div class="eom-wname">${escapeHtml(e.lastResult.name)}</div>
+        <div class="eom-wvotes">${e.lastResult.votes} vote${e.lastResult.votes === 1 ? "" : "s"}</div>
+      </div>`;
+    } else {
+      html += `<div class="empty"><h3>No winner yet</h3><div>Voting hasn't happened yet.</div></div>`;
+    }
+    html += `<div class="cl-banner info">Next vote — for <strong>${escapeHtml(e.nextAwardLabel || e.awardLabel)}</strong> — opens <strong>${escapeHtml(fmtRunDate(e.opensOn))}</strong> (the first full work week of the month).</div>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll("[data-eom]").forEach(b => b.addEventListener("click", () => confirmEomVote(b.dataset.eom)));
+}
+
+function confirmEomVote(name) {
+  askConfirm(`Vote for ${name} as ${state.eom.awardLabel} Employee of the Month? You can't change it.`,
+    () => castEomVote(name), { okText: "Vote" });
+}
+async function castEomVote(name) {
+  try {
+    const res = await apiCall("castEomVote", { pin: session.pin, choice: name });
+    if (res.error) { alert(res.error); return; }
+    state.eom = res;
+    renderEom();
+  } catch (err) {
+    alert("Error: " + (err && err.message ? err.message : err));
+  }
 }
 
 // Highlight the Closing Checklist home tile (red border + pulse + "your turn"
@@ -3325,6 +3423,7 @@ $("homeBtn").addEventListener("click", () => showScreen("home"));
 $("tileBubbles").addEventListener("click", openBubbles);
 $("tileChecklist").addEventListener("click", () => showScreen("checklist"));
 $("tileBoxCounter").addEventListener("click", () => showScreen("boxcounter"));
+$("tileEom").addEventListener("click", () => showScreen("eom"));
 document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);
 document.querySelectorAll("[data-bcsearch]").forEach(inp => inp.addEventListener("input", () => {

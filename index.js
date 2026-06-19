@@ -178,6 +178,18 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE box_sizes ADD COLUMN IF NOT EXISTS disregarded BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE box_sizes ADD COLUMN IF NOT EXISTS last_counted_by TEXT`);
 
+  // Employee of the Month votes. period = award month 'YYYY-MM' (the month that
+  // just ended); one vote per employee per period (UNIQUE).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eom_votes (
+      id          SERIAL PRIMARY KEY,
+      period      TEXT NOT NULL,
+      voter_name  TEXT NOT NULL,
+      choice_name TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (period, voter_name)
+    )`);
+
   // Clean up any not-yet-completed runs that landed on a closed day (e.g. a
   // Sunday run created before this rule existed). Leaves completed history alone.
   if (CLOSED_DOWS.length) {
@@ -1469,6 +1481,88 @@ async function setBoxDisregarded(who, id, disregarded) {
   return await getBoxSizes(who);
 }
 
+/* ---------- Employee of the Month ---------- */
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+function dowOfYmd(ymd) { const [y, m, d] = ymd.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); } // 0=Sun … 6=Sat
+function firstFullWorkweek(ymdFirst) {
+  const add = (1 - dowOfYmd(ymdFirst) + 7) % 7;   // days from the 1st to the first Monday on/after it
+  const monday = addDaysStr(ymdFirst, add);
+  return { monday, friday: addDaysStr(monday, 4) };
+}
+function monthFirstStr(y, m) { return `${y}-${String(m).padStart(2, '0')}-01`; }
+
+// Voting is the first full Mon–Fri work week of the current month (Pacific); the
+// award is for the month that just ended. period = award month 'YYYY-MM'.
+async function eomMeta() {
+  const { rows } = await pool.query(
+    `SELECT to_char((now() AT TIME ZONE 'America/Los_Angeles')::date, 'YYYY-MM-DD') AS today`);
+  const today = rows[0].today;
+  const [y, m] = today.split('-').map(Number);
+  const ww = firstFullWorkweek(monthFirstStr(y, m));
+  const votingOpen = today >= ww.monday && today <= ww.friday;
+  const py = m === 1 ? y - 1 : y, pmo = m === 1 ? 12 : m - 1;
+  const awardPeriod = `${py}-${String(pmo).padStart(2, '0')}`;
+  const awardLabel = `${MONTH_NAMES[pmo - 1]} ${py}`;
+  let opensOn, nextY, nextMo;
+  if (today <= ww.friday) { opensOn = ww.monday; nextY = py; nextMo = pmo; }   // this month's window votes for last month
+  else { const nf = m === 12 ? monthFirstStr(y + 1, 1) : monthFirstStr(y, m + 1); opensOn = firstFullWorkweek(nf).monday; nextY = y; nextMo = m; } // next month's window votes for THIS month
+  const nextAwardLabel = `${MONTH_NAMES[nextMo - 1]} ${nextY}`;
+  return { today, votingOpen, opensOn, closesOn: ww.friday, awardPeriod, awardLabel, nextAwardLabel };
+}
+
+async function getEom(who) {
+  if (!who) return { error: 'Not authorized' };
+  const meta = await eomMeta();
+  const { rows: emps } = await pool.query('SELECT name FROM employees WHERE active = true ORDER BY name');
+  const candidates = emps.map(e => e.name);
+  const { rows: tally } = await pool.query(
+    `SELECT choice_name AS name, COUNT(*)::int AS votes FROM eom_votes
+       WHERE period = $1 GROUP BY choice_name ORDER BY votes DESC, choice_name`, [meta.awardPeriod]);
+  const { rows: mine } = await pool.query(
+    'SELECT choice_name FROM eom_votes WHERE period = $1 AND voter_name = $2', [meta.awardPeriod, who.name]);
+  const { rows: vc } = await pool.query(
+    'SELECT COUNT(DISTINCT voter_name)::int AS n FROM eom_votes WHERE period = $1', [meta.awardPeriod]);
+  // Most-recent finished result (top vote-getter of the latest period that has votes).
+  const { rows: last } = await pool.query(
+    `SELECT period, choice_name AS name, COUNT(*)::int AS votes FROM eom_votes
+       GROUP BY period, choice_name ORDER BY period DESC, votes DESC, choice_name LIMIT 1`);
+  let lastResult = null;
+  if (last.length) {
+    const [ly, lm] = last[0].period.split('-').map(Number);
+    lastResult = { period: last[0].period, label: `${MONTH_NAMES[lm - 1]} ${ly}`, name: last[0].name, votes: last[0].votes };
+  }
+  return {
+    ...meta,
+    canVote: who.role === 'employee',
+    voterName: who.name,
+    candidates,
+    tally,
+    mine: { voted: mine.length > 0, choice: mine.length ? mine[0].choice_name : null },
+    progress: { voted: vc[0].n, total: candidates.length },
+    lastResult,
+  };
+}
+
+async function castEomVote(who, choice) {
+  if (!who) return { error: 'Not authorized' };
+  if (who.role !== 'employee') return { error: 'Only warehouse employees can vote.' };
+  const meta = await eomMeta();
+  if (!meta.votingOpen) return { error: 'Voting is not open right now.' };
+  const pick = String(choice || '').trim();
+  if (!pick) return { error: 'Pick a coworker.' };
+  if (pick === who.name) return { error: "You can't vote for yourself." };
+  const { rows: ok } = await pool.query('SELECT 1 FROM employees WHERE name = $1 AND active = true', [pick]);
+  if (!ok.length) return { error: "That person isn't an active employee." };
+  try {
+    await pool.query('INSERT INTO eom_votes (period, voter_name, choice_name) VALUES ($1, $2, $3)',
+      [meta.awardPeriod, who.name, pick]);
+  } catch (e) {
+    if (e.code === '23505') return { error: "You've already voted this month." };
+    throw e;
+  }
+  return await getEom(who);
+}
+
 app.post('/', async (req, res) => {
   let body;
   try {
@@ -1534,6 +1628,9 @@ app.post('/', async (req, res) => {
         case 'updateBoxSize': out = await updateBoxSize(who, body); break;
         case 'setBoxSizeActive': out = await setBoxSizeActive(who, body.id, body.active); break;
         case 'setBoxDisregarded': out = await setBoxDisregarded(who, body.id, body.disregarded); break;
+        // ----- Employee of the Month -----
+        case 'getEom':       out = await getEom(who); break;
+        case 'castEomVote':  out = await castEomVote(who, body.choice); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
