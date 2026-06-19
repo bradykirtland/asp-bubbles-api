@@ -1484,30 +1484,45 @@ async function setBoxDisregarded(who, id, disregarded) {
 /* ---------- Employee of the Month ---------- */
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 function dowOfYmd(ymd) { const [y, m, d] = ymd.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); } // 0=Sun … 6=Sat
-function firstFullWorkweek(ymdFirst) {
-  const add = (1 - dowOfYmd(ymdFirst) + 7) % 7;   // days from the 1st to the first Monday on/after it
-  const monday = addDaysStr(ymdFirst, add);
+function monthFirstStr(y, m) { return `${y}-${String(m).padStart(2, '0')}-01`; }
+function ymKey(y, m) { return `${y}-${String(m).padStart(2, '0')}`; }
+function monthLabel(y, m) { return `${MONTH_NAMES[m - 1]} ${y}`; }
+function prevYM(y, m) { return m === 1 ? [y - 1, 12] : [y, m - 1]; }
+function nextYM(y, m) { return m === 12 ? [y + 1, 1] : [y, m + 1]; }
+// First weekday (Mon–Fri) on/after the 1st of the month.
+function firstWeekdayOfMonth(y, m) {
+  const first = monthFirstStr(y, m);
+  const dow = dowOfYmd(first);
+  if (dow === 0) return addDaysStr(first, 1);   // Sunday → Monday (the 2nd)
+  if (dow === 6) return addDaysStr(first, 2);   // Saturday → Monday (the 3rd)
+  return first;                                 // the 1st is already a weekday
+}
+// The Mon–Fri work week that CONTAINS the month's first weekday. (If the 1st is,
+// say, a Friday, the window is that whole week — it may start in the prior month.)
+function votingWeekForMonth(y, m) {
+  const fw = firstWeekdayOfMonth(y, m);
+  const monday = addDaysStr(fw, -(dowOfYmd(fw) - 1));
   return { monday, friday: addDaysStr(monday, 4) };
 }
-function monthFirstStr(y, m) { return `${y}-${String(m).padStart(2, '0')}-01`; }
 
-// Voting is the first full Mon–Fri work week of the current month (Pacific); the
-// award is for the month that just ended. period = award month 'YYYY-MM'.
+// Voting window = the work week containing the new month's first work-day; the
+// vote decides the month that just ended. "Focus" = the open window if open,
+// otherwise the next upcoming window. period = award month 'YYYY-MM'.
 async function eomMeta() {
-  const { rows } = await pool.query(
-    `SELECT to_char((now() AT TIME ZONE 'America/Los_Angeles')::date, 'YYYY-MM-DD') AS today`);
-  const today = rows[0].today;
+  const today = (await pool.query(
+    `SELECT to_char((now() AT TIME ZONE 'America/Los_Angeles')::date, 'YYYY-MM-DD') AS d`)).rows[0].d;
   const [y, m] = today.split('-').map(Number);
-  const ww = firstFullWorkweek(monthFirstStr(y, m));
-  const votingOpen = today >= ww.monday && today <= ww.friday;
-  const py = m === 1 ? y - 1 : y, pmo = m === 1 ? 12 : m - 1;
-  const awardPeriod = `${py}-${String(pmo).padStart(2, '0')}`;
-  const awardLabel = `${MONTH_NAMES[pmo - 1]} ${py}`;
-  let opensOn, nextY, nextMo;
-  if (today <= ww.friday) { opensOn = ww.monday; nextY = py; nextMo = pmo; }   // this month's window votes for last month
-  else { const nf = m === 12 ? monthFirstStr(y + 1, 1) : monthFirstStr(y, m + 1); opensOn = firstFullWorkweek(nf).monday; nextY = y; nextMo = m; } // next month's window votes for THIS month
-  const nextAwardLabel = `${MONTH_NAMES[nextMo - 1]} ${nextY}`;
-  return { today, votingOpen, opensOn, closesOn: ww.friday, awardPeriod, awardLabel, nextAwardLabel };
+  const W = votingWeekForMonth(y, m);
+  const [ny, nm] = nextYM(y, m);
+  const Wn = votingWeekForMonth(ny, nm);   // next month's window can start in the last days of this month
+  let focus, cy, cm, votingOpen;
+  if (today >= W.monday && today <= W.friday) { focus = W; cy = y; cm = m; votingOpen = true; }
+  else if (today >= Wn.monday && today <= Wn.friday) { focus = Wn; cy = ny; cm = nm; votingOpen = true; }
+  else if (today < W.monday) { focus = W; cy = y; cm = m; votingOpen = false; }
+  else { focus = Wn; cy = ny; cm = nm; votingOpen = false; }
+  const [ay, am] = prevYM(cy, cm);
+  return { today, votingOpen, opensOn: focus.monday, closesOn: focus.friday,
+           awardPeriod: ymKey(ay, am), awardLabel: monthLabel(ay, am) };
 }
 
 async function getEom(who) {
