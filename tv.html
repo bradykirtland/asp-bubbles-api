@@ -244,7 +244,7 @@
       </div>
     </div>
     <button class="tv-homebtn" id="tvHome" hidden>⌂ Home</button>
-    <button class="tv-signin" id="tvSignin">Sign in to edit</button>
+    <button class="tv-signin" id="tvSignin">Sign in to make changes</button>
     <div class="meta">
       <div class="clock" id="clock">—</div>
       <div class="live" id="livePill"><span class="dot"></span><span id="liveText">Connecting…</span></div>
@@ -615,37 +615,6 @@ $("bcSearchClear").addEventListener("click", () => {
 });
 $("bcSort").addEventListener("change", () => { state.boxSort = $("bcSort").value; renderBoxList(); });
 
-/* ===== Auto-rotate (unattended TV) =====
-   Cycle Bubbles ↔ Closing Checklist every minute. Any tap/keypress pauses the
-   rotation so a viewer can read; it resumes after 1 minute of no interaction. */
-const ROTATE_MS = 60000;          // switch screens every 1 minute
-const IDLE_MS   = 60000;          // resume auto-rotate after 1 minute idle
-const ROTATE_SCREENS = ["bubbles", "checklist"];
-let rotateIdx = 0, rotateTimer = null, idleTimer = null;
-
-function advanceRotation() {
-  const next = ROTATE_SCREENS[rotateIdx % ROTATE_SCREENS.length];
-  rotateIdx++;
-  if (next === "bubbles") { showScreen("bubbles"); switchView("board"); }
-  else showScreen(next);
-}
-function startAutoRotate() {
-  if (rotateTimer) return;
-  advanceRotation();                                  // switch now, don't wait a full minute
-  rotateTimer = setInterval(advanceRotation, ROTATE_MS);
-}
-function stopAutoRotate() {
-  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
-}
-// Any human interaction pauses rotation and (re)starts the idle countdown.
-function noteInteraction() {
-  stopAutoRotate();
-  if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = setTimeout(startAutoRotate, IDLE_MS);
-}
-["pointerdown", "keydown"].forEach(ev =>
-  document.addEventListener(ev, noteInteraction, { passive: true }));
-
 /* ===== Clock + live indicator ===== */
 function tick() {
   const now = new Date();
@@ -685,7 +654,6 @@ async function fetchData() {
 
 /* ===== Boot ===== */
 showScreen("home");
-noteInteraction();   // start the idle countdown → auto-rotate kicks in after IDLE_MS
 tick();
 setInterval(tick, 1000);
 fetchData();
