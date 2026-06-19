@@ -175,6 +175,8 @@ async function ensureSchema() {
         ('29x17x7', 29, 290), ('29x17x12', 4, 300), ('32x17x16', 3, 310)`);
     console.log('Schema: seeded 31 box sizes.');
   }
+  await pool.query(`ALTER TABLE box_sizes ADD COLUMN IF NOT EXISTS disregarded BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE box_sizes ADD COLUMN IF NOT EXISTS last_counted_by TEXT`);
 
   // Clean up any not-yet-completed runs that landed on a closed day (e.g. a
   // Sunday run created before this rule existed). Leaves completed history alone.
@@ -1346,13 +1348,36 @@ app.get('/health', (req, res) => {
 
 /* ---------- Box Counter ---------- */
 // Any signed-in user can view, count, and set thresholds.
+// Pure date arithmetic on a 'YYYY-MM-DD' string (UTC, no timezone drift).
+function addDaysStr(ymd, n) {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+// Counting is Friday-only, in US Pacific (same tz as the checklist). Reports
+// whether today is Friday, whether a count already happened today, and the next Friday.
+async function boxCountMeta() {
+  const { rows } = await pool.query(`
+    SELECT to_char((now() AT TIME ZONE 'America/Los_Angeles')::date, 'YYYY-MM-DD') AS today,
+           EXTRACT(DOW FROM (now() AT TIME ZONE 'America/Los_Angeles'))::int AS dow,
+           to_char((SELECT (max(last_counted_at) AT TIME ZONE 'America/Los_Angeles')::date
+                      FROM box_sizes WHERE active = true), 'YYYY-MM-DD') AS last_count_date`);
+  const today = rows[0].today;
+  const dow = rows[0].dow;                       // 0=Sun … 5=Fri … 6=Sat
+  const lastCountDate = rows[0].last_count_date || null;
+  const isFriday = dow === 5;
+  const countedToday = !!lastCountDate && lastCountDate === today;
+  const add = isFriday ? (countedToday ? 7 : 0) : (((5 - dow) + 7) % 7);
+  return { today, dow, isFriday, countedToday, lastCountDate, nextFriday: addDaysStr(today, add) };
+}
+
 async function getBoxSizes(who) {
   if (!who) return { error: 'Not authorized' };
   const { rows } = await pool.query(
-    `SELECT id, size, quantity, low_threshold AS "lowThreshold",
-            sort_order AS "sortOrder", last_counted_at AS "lastCountedAt"
+    `SELECT id, size, quantity, low_threshold AS "lowThreshold", disregarded,
+            last_counted_by AS "lastCountedBy", sort_order AS "sortOrder",
+            last_counted_at AS "lastCountedAt"
        FROM box_sizes WHERE active = true ORDER BY sort_order, id`);
-  return { boxSizes: rows };
+  return { boxSizes: rows, boxMeta: await boxCountMeta() };
 }
 
 // Save a Friday count: each provided count becomes the new current inventory.
@@ -1363,7 +1388,7 @@ async function emailLowStock() {
   const { rows } = await pool.query(
     `SELECT size, quantity, low_threshold
        FROM box_sizes
-      WHERE active = true AND low_threshold IS NOT NULL AND quantity <= low_threshold
+      WHERE active = true AND disregarded = false AND low_threshold IS NOT NULL AND quantity <= low_threshold
       ORDER BY quantity, sort_order, id`);
   if (!rows.length) return;
   const lines = rows.map(r => {
@@ -1384,15 +1409,18 @@ async function emailLowStock() {
 
 async function saveBoxCount(who, body) {
   if (!who) return { error: 'Not authorized' };
+  const meta = await boxCountMeta();
+  if (!meta.isFriday) return { error: 'Box counting is only available on Fridays.' };
   const counts = Array.isArray(body && body.counts) ? body.counts : [];
+  const by = ((body && body.countedBy) ? String(body.countedBy) : '').trim().slice(0, 80) || (who.name || '');
   let saved = 0;
   for (const c of counts) {
     const id = parseInt(c && c.id, 10);
     const q = parseInt(c && c.counted, 10);
     if (!Number.isFinite(id) || !Number.isFinite(q) || q < 0) continue;
     await pool.query(
-      'UPDATE box_sizes SET quantity = $1, last_counted_at = now() WHERE id = $2 AND active = true',
-      [q, id]);
+      'UPDATE box_sizes SET quantity = $1, last_counted_at = now(), last_counted_by = $2 WHERE id = $3 AND active = true',
+      [q, by, id]);
     saved++;
   }
   if (saved) { try { await emailLowStock(); } catch (e) { console.warn('low-stock email failed:', e && e.message); } }
@@ -1427,6 +1455,17 @@ async function setBoxSizeActive(who, id, active) {
   const bid = parseInt(id, 10);
   if (!Number.isFinite(bid)) return { error: 'Bad id.' };
   await pool.query('UPDATE box_sizes SET active = $1 WHERE id = $2', [!!active, bid]);
+  return await getBoxSizes(who);
+}
+
+// Disregard (or restore) a size — it no longer needs counting and is hidden from
+// the Count tab + low-stock alerts, but is kept (restorable). Any signed-in user
+// (the counter can disregard a size that doesn't matter; managers can too).
+async function setBoxDisregarded(who, id, disregarded) {
+  if (!who) return { error: 'Not authorized' };
+  const bid = parseInt(id, 10);
+  if (!Number.isFinite(bid)) return { error: 'Bad id.' };
+  await pool.query('UPDATE box_sizes SET disregarded = $1 WHERE id = $2', [!!disregarded, bid]);
   return await getBoxSizes(who);
 }
 
@@ -1494,6 +1533,7 @@ app.post('/', async (req, res) => {
         case 'saveBoxCount':  out = await saveBoxCount(who, body); break;
         case 'updateBoxSize': out = await updateBoxSize(who, body); break;
         case 'setBoxSizeActive': out = await setBoxSizeActive(who, body.id, body.active); break;
+        case 'setBoxDisregarded': out = await setBoxDisregarded(who, body.id, body.disregarded); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
