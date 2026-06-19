@@ -1482,6 +1482,9 @@ async function setBoxDisregarded(who, id, disregarded) {
 }
 
 /* ---------- Employee of the Month ---------- */
+// TEMP (testing): force voting OPEN so the team can try it outside the normal
+// window. Set back to false to restore the real first-work-day-week schedule.
+const EOM_FORCE_OPEN = true;
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 function dowOfYmd(ymd) { const [y, m, d] = ymd.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); } // 0=Sun … 6=Sat
 function monthFirstStr(y, m) { return `${y}-${String(m).padStart(2, '0')}-01`; }
@@ -1521,7 +1524,7 @@ async function eomMeta() {
   else if (today < W.monday) { focus = W; cy = y; cm = m; votingOpen = false; }
   else { focus = Wn; cy = ny; cm = nm; votingOpen = false; }
   const [ay, am] = prevYM(cy, cm);
-  return { today, votingOpen, opensOn: focus.monday, closesOn: focus.friday,
+  return { today, votingOpen: EOM_FORCE_OPEN || votingOpen, opensOn: focus.monday, closesOn: focus.friday,
            awardPeriod: ymKey(ay, am), awardLabel: monthLabel(ay, am) };
 }
 
