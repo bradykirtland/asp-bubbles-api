@@ -14,6 +14,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Code 128 renderer for the on-screen label preview (the printer renders its own barcode from ZPL).
+     Bundled locally (MIT, JsBarcode v3.11.6) so the preview works offline on the warehouse handheld. -->
+<script src="jsbarcode.min.js" defer></script>
 <style>
   :root {
     --bg: #f7f7f5;
@@ -564,6 +567,39 @@
   .app-tile.alert { border-color:var(--danger); }
   .app-tile.alert .tile-icon { animation: navpulse 1.2s ease-in-out infinite; }
 
+  /* Label Printer */
+  #labelScreen { padding-bottom:40px; }
+  .lp-wrap { max-width:520px; margin:0 auto; display:flex; flex-direction:column; gap:16px; }
+  .lp-hint { color:var(--muted); font-size:14px; }
+  .lp-field { display:flex; flex-direction:column; gap:6px; }
+  .lp-lab { font-size:13px; font-weight:600; color:var(--muted); }
+  #lpCode { font-size:22px; font-weight:700; padding:14px 16px; border:2px solid var(--accent); border-radius:var(--radius); background:var(--surface); letter-spacing:.5px; width:100%; }
+  #lpCode:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .lp-qtyrow { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .lp-stepper { display:flex; align-items:center; }
+  .lp-stepper button { width:48px; height:48px; font-size:24px; font-weight:700; border:1px solid var(--border); background:var(--surface); color:var(--accent); cursor:pointer; }
+  .lp-stepper button:first-child { border-radius:12px 0 0 12px; }
+  .lp-stepper button:last-child { border-radius:0 12px 12px 0; }
+  .lp-stepper input { width:72px; height:48px; text-align:center; font-size:20px; font-weight:700; border:1px solid var(--border); border-left:0; border-right:0; -moz-appearance:textfield; }
+  .lp-stepper input::-webkit-outer-spin-button, .lp-stepper input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+  .lp-previewwrap { display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .lp-label { width:300px; height:150px; background:#fff; border:1px solid #d4d4d4; border-radius:6px; box-shadow:var(--shadow-card); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:10px; }
+  .lp-num { font-size:30px; font-weight:800; color:#000; line-height:1; letter-spacing:.5px; word-break:break-all; text-align:center; }
+  .lp-bc { width:248px; height:54px; }
+  .lp-bctext { font-size:12px; color:#000; letter-spacing:2px; }
+  .lp-cap { font-size:12px; color:var(--muted); }
+  .lp-actions { display:flex; gap:10px; }
+  .lp-actions .primary { flex:1; font-size:17px; padding:15px; }
+  .lp-status { padding:10px 14px; border-radius:10px; font-size:14px; font-weight:600; background:var(--accent-soft); color:var(--accent); }
+  .lp-status.ok { background:var(--good-soft); color:var(--good); }
+  .lp-status.err { background:var(--danger-soft); color:var(--danger); }
+  .lp-setup { font-size:14px; color:var(--muted); border-top:1px solid var(--border); padding-top:12px; }
+  .lp-setup summary { cursor:pointer; font-weight:600; }
+  .lp-setupbody { padding-top:10px; }
+  .lp-mini { padding:5px 10px; font-size:12px; margin-left:6px; }
+  .lp-steps { margin:10px 0 0; padding-left:20px; line-height:1.7; }
+  #lpZpl { background:#0f172a; color:#cbd5e1; padding:10px; border-radius:8px; font-size:11px; overflow:auto; white-space:pre-wrap; margin-top:8px; }
+
   /* Box Counter */
   .bc-tabs { display:flex; gap:8px; margin-bottom:18px; }
   .bc-tab, .eom-tab { flex:1; padding:11px; font-weight:600; border:1px solid var(--border); background:var(--surface); border-radius:10px; color:var(--muted); cursor:pointer; font-family:inherit; font-size:inherit; }
@@ -846,6 +882,14 @@
         </span>
         <span class="tile-arrow">›</span>
       </button>
+      <button class="app-tile" id="tileLabel">
+        <span class="tile-icon">🏷️</span>
+        <span class="tile-body">
+          <span class="tile-name">Label Printer</span>
+          <span class="tile-desc">Scan a part &amp; reprint barcode labels</span>
+        </span>
+        <span class="tile-arrow">›</span>
+      </button>
       <a class="app-tile tv" href="/tv" target="_blank" rel="noopener">
         <span class="tile-icon">📺</span>
         <span class="tile-body">
@@ -980,6 +1024,54 @@
     <div id="eomLogView" hidden>
       <div class="filterbar"><label for="eomLogPeriod">Month</label><select id="eomLogPeriod"><option value="">—</option></select></div>
       <div id="eomLogBody"></div>
+    </div>
+  </div>
+
+  <!-- ===== Label Printer app ===== -->
+  <div id="labelScreen" hidden>
+    <div class="lp-wrap">
+      <div class="lp-hint">Scan a part barcode (or type the number), set how many, then tap Print. Labels print on the Zebra ZQ620.</div>
+      <label class="lp-field">
+        <span class="lp-lab">Part barcode</span>
+        <input id="lpCode" type="text" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Scan here… or type e.g. 6000-362">
+      </label>
+      <div class="lp-qtyrow">
+        <span class="lp-lab">Quantity</span>
+        <div class="lp-stepper">
+          <button type="button" id="lpMinus" aria-label="Fewer">−</button>
+          <input id="lpQty" type="number" min="1" max="999" value="1" inputmode="numeric">
+          <button type="button" id="lpPlus" aria-label="More">＋</button>
+        </div>
+      </div>
+      <div class="lp-previewwrap">
+        <div class="lp-label">
+          <div class="lp-num" id="lpNum">—</div>
+          <svg id="lpBarcode" class="lp-bc"></svg>
+          <div class="lp-bctext" id="lpBcText"></div>
+        </div>
+        <div class="lp-cap">Preview · 2″ × 1″ label</div>
+      </div>
+      <div class="lp-actions">
+        <button class="primary" id="lpPrint" disabled>🖨️ Print label</button>
+        <button class="ghost" id="lpReprint" hidden>Reprint last</button>
+      </div>
+      <div class="lp-status" id="lpStatus" hidden></div>
+      <details class="lp-setup">
+        <summary>Printer &amp; scanner setup</summary>
+        <div class="lp-setupbody">
+          <p>Printer: <b id="lpPrinter">checking…</b>
+            <button class="ghost lp-mini" id="lpConnect">Find printer</button>
+            <button class="ghost lp-mini" id="lpTest">Test print</button>
+            <button class="ghost lp-mini" id="lpShowZpl">Show ZPL</button>
+          </p>
+          <pre id="lpZpl" hidden></pre>
+          <ol class="lp-steps">
+            <li>Install <b>Zebra Browser Print</b> (Android) on the C61.</li>
+            <li>Pair the <b>ZQ620</b> in Android Bluetooth settings, then pick it as the default printer in Browser Print.</li>
+            <li>Set the C61 scanner to <b>keyboard / keystroke output</b> mode (ScanSettings) so scans type into the box above.</li>
+          </ol>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -1885,6 +1977,7 @@ function showScreen(name) {
   $("checklistScreen").hidden = name !== "checklist";
   $("boxcounterScreen").hidden = name !== "boxcounter";
   $("eomScreen").hidden = name !== "eom";
+  $("labelScreen").hidden = name !== "label";
   document.querySelector(".bottomnav").hidden = name !== "bubbles";
   // The home screen has its own centered hero, so hide the duplicate top header there.
   document.querySelector("header.top").hidden = name === "home";
@@ -1895,6 +1988,7 @@ function showScreen(name) {
     checklist:  ["Closing Checklist", "End-of-day closing tasks"],
     boxcounter: ["Box Counter", "Friday packaging box counts"],
     eom:        ["Employee of the Month", "Vote for a coworker"],
+    label:      ["Label Printer", "Scan & reprint barcode labels"],
   };
   const t = titles[name] || titles.home;
   $("appTitle").textContent = t[0];
@@ -1902,6 +1996,141 @@ function showScreen(name) {
   if (name === "checklist") loadChecklist();
   if (name === "boxcounter") loadBoxSizes();
   if (name === "eom") { switchEomTab("vote"); loadEom(); }
+  if (name === "label") initLabelPrinter();
+}
+
+/* ---------- Label Printer (scan a part → reprint Code 128 labels on the Zebra ZQ620) ----------
+   Prints via the Zebra Browser Print agent running locally on the device (e.g. the
+   Chainway C61). Browser Print exposes a small HTTP API on localhost; we POST raw ZPL.
+   No server round-trip — the cloud server can't reach a Bluetooth printer on the LAN. */
+const LP_BASES = ["http://127.0.0.1:9100", "http://127.0.0.1:9101"];
+const lp = { base: null, device: null, last: null };
+
+function initLabelPrinter() {
+  lpSetStatus("");
+  $("lpCode").value = "";
+  $("lpQty").value = "1";
+  $("lpZpl").hidden = true;
+  lpRenderPreview();
+  $("lpReprint").hidden = !lp.last;
+  setTimeout(() => { try { $("lpCode").focus(); } catch (_) {} }, 60);
+  lpDetectPrinter();
+}
+
+// Strip characters that aren't valid in a scanned part number / would break ZPL.
+function lpCleanCode(raw) {
+  return String(raw || "").replace(/[\r\n\t]/g, "").replace(/[\^~\\]/g, "").trim().slice(0, 40);
+}
+
+function lpQtyVal() {
+  let q = parseInt($("lpQty").value, 10);
+  if (!Number.isFinite(q) || q < 1) q = 1;
+  if (q > 999) q = 999;
+  return q;
+}
+
+function lpRenderPreview() {
+  const code = lpCleanCode($("lpCode").value);
+  $("lpNum").textContent = code || "—";
+  $("lpBcText").textContent = code || "";
+  $("lpPrint").disabled = !code;
+  const svg = $("lpBarcode");
+  if (!code) { svg.innerHTML = ""; return; }
+  if (typeof JsBarcode === "function") {
+    try {
+      JsBarcode(svg, code, { format: "CODE128", displayValue: false, margin: 0, height: 54, width: 1.7 });
+    } catch (e) { svg.innerHTML = ""; }
+  }
+}
+
+// Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots): big part number on top,
+// centered Code 128 below. ^PQ prints `qty` copies on one button press.
+function lpBuildZpl(code, qty) {
+  return [
+    "^XA",
+    "^CI28",
+    "^PW406",
+    "^LL0203",
+    "^FO0,22^A0N,52,52^FB406,1,0,C,0^FD" + code + "^FS",
+    "^BY2,2.5,86",
+    "^FO0,96^FB406,1,0,C^BCN,86,N,N,N^FD" + code + "^FS",
+    "^PQ" + qty + ",0,0,N",
+    "^XZ"
+  ].join("\n");
+}
+
+async function lpDetectPrinter() {
+  const el = $("lpPrinter");
+  if (el) el.textContent = "checking…";
+  const dev = await lpFindPrinter().catch(() => null);
+  if (el) el.textContent = dev ? (dev.name || "Zebra printer ready") : "not found — open Zebra Browser Print";
+}
+
+// Ask the local Browser Print agent for the default printer (tries both known ports).
+async function lpFindPrinter() {
+  for (const base of LP_BASES) {
+    try {
+      const r = await fetch(base + "/default?type=printer", { method: "GET" });
+      if (!r.ok) continue;
+      const txt = await r.text();
+      let dev = null;
+      try { dev = JSON.parse(txt); } catch (_) {}
+      if (dev && (dev.uid || dev.name)) { lp.base = base; lp.device = dev; return dev; }
+    } catch (_) { /* agent not running on this port */ }
+  }
+  return null;
+}
+
+async function lpSendZpl(zpl) {
+  if (!lp.device) {
+    const d = await lpFindPrinter();
+    if (!d) throw new Error("No printer found. Open Zebra Browser Print on this device and select the ZQ620.");
+  }
+  const r = await fetch(lp.base + "/write", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device: lp.device, data: zpl })
+  });
+  if (!r.ok) throw new Error("Browser Print returned " + r.status);
+}
+
+function lpSetStatus(msg, kind) {
+  const el = $("lpStatus");
+  if (!el) return;
+  el.hidden = !msg;
+  el.textContent = msg || "";
+  el.className = "lp-status" + (kind ? " " + kind : "");
+}
+
+async function lpPrint(zplOverride, label) {
+  const code = lpCleanCode($("lpCode").value);
+  const qty = lpQtyVal();
+  if (!zplOverride && !code) { lpSetStatus("Scan or type a part number first.", "err"); return; }
+  const zpl = zplOverride || lpBuildZpl(code, qty);
+  lpSetStatus("Printing…");
+  $("lpPrint").disabled = true;
+  try {
+    await lpSendZpl(zpl);
+    if (!zplOverride) { lp.last = { code: code, qty: qty }; $("lpReprint").hidden = false; }
+    lpSetStatus((label || ("Printed " + qty + " × " + code)) + " ✓", "ok");
+    try { const ci = $("lpCode"); ci.focus(); ci.select(); } catch (_) {}
+  } catch (e) {
+    lpSetStatus((e && e.message) ? e.message : "Print failed.", "err");
+  } finally {
+    $("lpPrint").disabled = !lpCleanCode($("lpCode").value);
+  }
+}
+
+function lpReprintLast() {
+  if (!lp.last) return;
+  $("lpCode").value = lp.last.code;
+  $("lpQty").value = lp.last.qty;
+  lpRenderPreview();
+  lpPrint();
+}
+
+function lpTestPrint() {
+  lpPrint(lpBuildZpl("TEST-123", 1), "Test label sent");
 }
 
 // Open the Bubbles app on its default tab.
@@ -3548,6 +3777,26 @@ $("tileChecklist").addEventListener("click", () => showScreen("checklist"));
 $("tileBoxCounter").addEventListener("click", () => showScreen("boxcounter"));
 $("tileEom").addEventListener("click", () => showScreen("eom"));
 document.querySelectorAll(".eom-tab").forEach(b => b.addEventListener("click", () => switchEomTab(b.dataset.eomtab)));
+
+// Label Printer controls.
+$("tileLabel").addEventListener("click", () => showScreen("label"));
+$("lpCode").addEventListener("input", lpRenderPreview);
+$("lpCode").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); lpRenderPreview(); try { $("lpQty").focus(); $("lpQty").select(); } catch (_) {} }
+});
+$("lpQty").addEventListener("input", lpRenderPreview);
+$("lpQty").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); lpPrint(); } });
+$("lpMinus").addEventListener("click", () => { $("lpQty").value = Math.max(1, lpQtyVal() - 1); lpRenderPreview(); });
+$("lpPlus").addEventListener("click", () => { $("lpQty").value = Math.min(999, lpQtyVal() + 1); lpRenderPreview(); });
+$("lpPrint").addEventListener("click", () => lpPrint());
+$("lpReprint").addEventListener("click", lpReprintLast);
+$("lpConnect").addEventListener("click", lpDetectPrinter);
+$("lpTest").addEventListener("click", lpTestPrint);
+$("lpShowZpl").addEventListener("click", () => {
+  const z = $("lpZpl");
+  z.hidden = !z.hidden;
+  if (!z.hidden) z.textContent = lpBuildZpl(lpCleanCode($("lpCode").value) || "6000-362", lpQtyVal());
+});
 $("eomLogPeriod").addEventListener("change", () => { state.eomLogPeriod = $("eomLogPeriod").value; renderEomLog(); });
 document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);
