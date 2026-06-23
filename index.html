@@ -17,8 +17,6 @@
 <!-- Code 128 renderer for the on-screen label preview (the printer renders its own barcode from ZPL).
      Bundled locally (MIT, JsBarcode v3.11.6) so the preview works offline on the warehouse handheld. -->
 <script src="jsbarcode.min.js" defer></script>
-<!-- Zebra Browser Print JS library — the supported bridge from the page to the Browser Print app (incl. Android). -->
-<script src="browserprint.min.js" defer></script>
 <style>
   :root {
     --bg: #f7f7f5;
@@ -595,6 +593,9 @@
   .lp-status { padding:10px 14px; border-radius:10px; font-size:14px; font-weight:600; background:var(--accent-soft); color:var(--accent); }
   .lp-status.ok { background:var(--good-soft); color:var(--good); }
   .lp-status.err { background:var(--danger-soft); color:var(--danger); }
+  .lp-status.warn { background:#fef3c7; color:var(--warn); }
+  #lpPrinter.lp-on { color:var(--good); }
+  #lpPrinter.lp-off { color:var(--warn); }
   .lp-setup { font-size:14px; color:var(--muted); border-top:1px solid var(--border); padding-top:12px; }
   .lp-setup summary { cursor:pointer; font-weight:600; }
   .lp-setupbody { padding-top:10px; }
@@ -1059,19 +1060,19 @@
       </div>
       <div class="lp-status" id="lpStatus" hidden></div>
       <details class="lp-setup">
-        <summary>Printer &amp; scanner setup</summary>
+        <summary>Printer status &amp; setup</summary>
         <div class="lp-setupbody">
           <p>Printer: <b id="lpPrinter">checking…</b>
-            <button class="ghost lp-mini" id="lpConnect">Find printer</button>
+            <button class="ghost lp-mini" id="lpConnect">Check</button>
             <button class="ghost lp-mini" id="lpTest">Test print</button>
             <button class="ghost lp-mini" id="lpShowZpl">Show ZPL</button>
           </p>
           <pre id="lpZpl" hidden></pre>
-          <ol class="lp-steps">
-            <li>Install <b>Zebra Browser Print</b> (Android) on the C61.</li>
-            <li>Pair the <b>ZQ620</b> in Android Bluetooth settings, then pick it as the default printer in Browser Print.</li>
-            <li>Set the C61 scanner to <b>keyboard / keystroke output</b> mode (ScanSettings) so scans type into the box above.</li>
-          </ol>
+          <p style="margin:8px 0 4px;">Printing works on <b>any device</b> — nothing to install. Labels are queued on the server and printed by the warehouse PC.</p>
+          <ul class="lp-steps">
+            <li>If status shows <b>Offline</b>, make sure the <b>warehouse print PC is on</b> (it runs the small print bridge). Jobs wait in line and print once it's back on.</li>
+            <li>On a scanner handheld (e.g. the C61), set the scanner to <b>keyboard / keystroke output</b> mode so scans type into the box above.</li>
+          </ul>
         </div>
       </details>
     </div>
@@ -2002,12 +2003,11 @@ function showScreen(name) {
 }
 
 /* ---------- Label Printer (scan a part → reprint Code 128 labels on the Zebra ZQ620) ----------
-   Prints via the Zebra Browser Print app on the device (e.g. the Chainway C61), using
-   Zebra's BrowserPrint JS library (browserprint.min.js). On Android, Browser Print does
-   NOT expose a localhost HTTP port — the library is the only supported bridge. The first
-   print triggers an ALLOW/BLOCK prompt in the Browser Print app. No server round-trip —
-   the cloud server can't reach the printer on the LAN. */
-const lp = { device: null, last: null, lastErr: null };
+   Devices need NOTHING installed. The Print button queues the job on our server
+   (action "enqueuePrint"); a small "print bridge" on the warehouse PC polls the
+   server and sends the ZPL to the printer over the LAN. Here we just enqueue and
+   show whether that bridge/PC is currently online. */
+const lp = { last: null };
 
 function initLabelPrinter() {
   lpSetStatus("");
@@ -2062,41 +2062,29 @@ function lpBuildZpl(code, qty) {
   ].join("\n");
 }
 
-function lpBPReady() { return typeof BrowserPrint !== "undefined" && BrowserPrint && typeof BrowserPrint.getDefaultDevice === "function"; }
-
+// Ask the server whether the warehouse print bridge (PC) is currently online.
 async function lpDetectPrinter() {
   const el = $("lpPrinter");
-  if (el) el.textContent = "checking…";
-  if (!lpBPReady()) { if (el) el.textContent = "Browser Print app not detected — install & open it"; return; }
-  const dev = await lpFindPrinter();
-  if (el) {
-    if (dev) el.textContent = (dev.name || "Zebra printer") + " ✓";
-    else el.textContent = lp.lastErr ? lp.lastErr : "no default printer — set the ZQ620 as default in Browser Print";
+  if (el) { el.textContent = "checking…"; el.className = ""; }
+  try {
+    const s = await apiCall("getPrintStatus", { pin: session.pin });
+    if (s && s.error) { if (el) el.textContent = s.error; return; }
+    lpShowPrinterStatus(s);
+  } catch (e) {
+    if (el) el.textContent = "couldn't check (no connection)";
   }
 }
 
-// Ask the Browser Print app (via Zebra's JS library) for the user's default printer.
-function lpFindPrinter() {
-  return new Promise((resolve) => {
-    lp.lastErr = null;
-    if (!lpBPReady()) { lp.lastErr = "Browser Print library not loaded"; return resolve(null); }
-    BrowserPrint.getDefaultDevice("printer",
-      (device) => { lp.device = device || null; resolve(lp.device); },
-      (err) => { lp.lastErr = (typeof err === "string" && err) ? err : "Can't reach the Browser Print app"; resolve(null); });
-  });
-}
-
-async function lpSendZpl(zpl) {
-  if (!lpBPReady()) throw new Error("Browser Print app isn't running. Open it on this device and try again.");
-  if (!lp.device) {
-    const d = await lpFindPrinter();
-    if (!d) throw new Error(lp.lastErr || "No default printer. In Browser Print, set the ZQ620 as default, then reload and tap Allow.");
+function lpShowPrinterStatus(s) {
+  const el = $("lpPrinter");
+  if (!el || !s) return;
+  if (s.bridgeOnline) {
+    el.textContent = "Online ✓" + (s.pending ? (" · " + s.pending + " in queue") : "");
+    el.className = "lp-on";
+  } else {
+    el.textContent = "Offline — the warehouse print PC may be off" + (s.pending ? (" · " + s.pending + " waiting") : "");
+    el.className = "lp-off";
   }
-  await new Promise((resolve, reject) => {
-    lp.device.send(zpl,
-      () => resolve(true),
-      (err) => reject(new Error((typeof err === "string" && err) ? err : "Printer didn't accept the job (check it's on and in range).")));
-  });
 }
 
 function lpSetStatus(msg, kind) {
@@ -2107,20 +2095,26 @@ function lpSetStatus(msg, kind) {
   el.className = "lp-status" + (kind ? " " + kind : "");
 }
 
-async function lpPrint(zplOverride, label) {
-  const code = lpCleanCode($("lpCode").value);
-  const qty = lpQtyVal();
-  if (!zplOverride && !code) { lpSetStatus("Scan or type a part number first.", "err"); return; }
-  const zpl = zplOverride || lpBuildZpl(code, qty);
-  lpSetStatus("Printing…");
+// Queue the label on the server. The warehouse bridge picks it up and prints.
+async function lpPrint(codeOverride, label) {
+  const code = lpCleanCode(codeOverride != null ? codeOverride : $("lpCode").value);
+  const qty = codeOverride != null ? 1 : lpQtyVal();
+  if (!code) { lpSetStatus("Scan or type a part number first.", "err"); return; }
+  lpSetStatus("Sending…");
   $("lpPrint").disabled = true;
   try {
-    await lpSendZpl(zpl);
-    if (!zplOverride) { lp.last = { code: code, qty: qty }; $("lpReprint").hidden = false; }
-    lpSetStatus((label || ("Printed " + qty + " × " + code)) + " ✓", "ok");
+    const res = await apiCall("enqueuePrint", { pin: session.pin, code: code, qty: qty });
+    if (res && res.error) { lpSetStatus(res.error, "err"); return; }
+    if (codeOverride == null) { lp.last = { code: code, qty: qty }; $("lpReprint").hidden = false; }
+    if (res && res.bridgeOnline) {
+      lpSetStatus((label || ("Printing " + qty + " × " + code)) + " ✓", "ok");
+    } else {
+      lpSetStatus("Queued — will print when the warehouse PC is back online.", "warn");
+    }
+    lpShowPrinterStatus(res);
     try { const ci = $("lpCode"); ci.focus(); ci.select(); } catch (_) {}
   } catch (e) {
-    lpSetStatus((e && e.message) ? e.message : "Print failed.", "err");
+    lpSetStatus((e && e.message) ? e.message : "Couldn't reach the server.", "err");
   } finally {
     $("lpPrint").disabled = !lpCleanCode($("lpCode").value);
   }
@@ -2134,9 +2128,7 @@ function lpReprintLast() {
   lpPrint();
 }
 
-function lpTestPrint() {
-  lpPrint(lpBuildZpl("TEST-123", 1), "Test label sent");
-}
+function lpTestPrint() { lpPrint("TEST-123", "Test label queued"); }
 
 // Open the Bubbles app on its default tab.
 function openBubbles() {

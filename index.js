@@ -30,7 +30,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '19';
+const APP_VERSION = '20';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -200,6 +200,30 @@ async function ensureSchema() {
       `DELETE FROM checklist_runs WHERE status = 'pending' AND EXTRACT(DOW FROM run_date)::int = ANY($1)`,
       [CLOSED_DOWS]);
   }
+
+  // ----- Label Printer: print queue + bridge heartbeat -----
+  // Employee devices enqueue a job (no per-device software); a small "print
+  // bridge" on the warehouse PC polls, sends the ZPL to the ZQ620 over the LAN
+  // (raw TCP 9100), and acks. Jobs wait here until the bridge picks them up.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS print_jobs (
+      id           SERIAL PRIMARY KEY,
+      code         TEXT NOT NULL,
+      qty          INTEGER NOT NULL DEFAULT 1,
+      zpl          TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'pending',
+      requested_by TEXT,
+      error        TEXT,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      printed_at   TIMESTAMPTZ
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS print_jobs_status_idx ON print_jobs(status, id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS print_bridge (
+      id        INTEGER PRIMARY KEY,
+      last_seen TIMESTAMPTZ
+    )`);
+  await pool.query(`INSERT INTO print_bridge (id, last_seen) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING`);
 }
 
 // =================================================================
@@ -1327,6 +1351,84 @@ async function resetChecklist(who) {
 }
 
 // =================================================================
+// Label Printer — print queue + bridge
+// =================================================================
+// Shared secret between this server and the warehouse "print bridge" script.
+// Set PRINT_BRIDGE_TOKEN on the Railway service AND in the bridge script.
+const BRIDGE_TOKEN = process.env.PRINT_BRIDGE_TOKEN || '';
+const BRIDGE_ONLINE_MS = 45000;   // bridge counts as "online" if seen in this window
+
+// Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots): big part number on
+// top, centered Code 128 below. ^PQ prints `qty` copies. Mirrors the client preview.
+function buildLabelZpl(code, qty) {
+  const c = String(code == null ? '' : code).replace(/[\r\n\t]/g, '').replace(/[\^~\\]/g, '').trim().slice(0, 40);
+  const q = Math.max(1, Math.min(999, parseInt(qty, 10) || 1));
+  return [
+    '^XA', '^CI28', '^PW406', '^LL0203',
+    '^FO0,22^A0N,52,52^FB406,1,0,C,0^FD' + c + '^FS',
+    '^BY2,2.5,86',
+    '^FO0,96^FB406,1,0,C^BCN,86,N,N,N^FD' + c + '^FS',
+    '^PQ' + q + ',0,0,N', '^XZ'
+  ].join('\n');
+}
+
+async function bridgeOnline() {
+  const { rows } = await pool.query('SELECT last_seen FROM print_bridge WHERE id = 1');
+  if (!rows.length || !rows[0].last_seen) return false;
+  return (Date.now() - new Date(rows[0].last_seen).getTime()) < BRIDGE_ONLINE_MS;
+}
+
+// Any signed-in user queues a label. The server builds the ZPL so the label
+// format lives in one place and devices need nothing installed.
+async function enqueuePrint(who, body) {
+  if (!who) return { error: 'Please sign in.' };
+  const code = String(body && body.code != null ? body.code : '')
+    .replace(/[\r\n\t]/g, '').replace(/[\^~\\]/g, '').trim().slice(0, 40);
+  if (!code) return { error: 'Nothing to print — scan or type a barcode first.' };
+  const qty = Math.max(1, Math.min(999, parseInt(body && body.qty, 10) || 1));
+  const zpl = buildLabelZpl(code, qty);
+  const { rows } = await pool.query(
+    'INSERT INTO print_jobs (code, qty, zpl, requested_by) VALUES ($1,$2,$3,$4) RETURNING id',
+    [code, qty, zpl, who.name || null]);
+  return { ok: true, jobId: rows[0].id, qty, code, bridgeOnline: await bridgeOnline() };
+}
+
+async function getPrintStatus(who) {
+  if (!who) return { error: 'Please sign in.' };
+  const { rows } = await pool.query("SELECT COUNT(*)::int AS pending FROM print_jobs WHERE status = 'pending'");
+  return { bridgeOnline: await bridgeOnline(), pending: rows[0].pending };
+}
+
+// ----- Bridge-facing (authenticated by PRINT_BRIDGE_TOKEN, not a user) -----
+function bridgeOk(body) { return BRIDGE_TOKEN && body && body.bridgeToken === BRIDGE_TOKEN; }
+
+// Bridge polls this: records a heartbeat, expires very old jobs (so a PC that
+// was off for hours doesn't surprise-print a stack), and returns pending jobs.
+async function printPoll(body) {
+  if (!bridgeOk(body)) return { error: 'Unauthorized' };
+  await pool.query('UPDATE print_bridge SET last_seen = now() WHERE id = 1');
+  await pool.query(
+    "UPDATE print_jobs SET status='expired', error='expired (older than 6h)' " +
+    "WHERE status='pending' AND created_at < now() - interval '6 hours'");
+  const { rows } = await pool.query(
+    "SELECT id, zpl FROM print_jobs WHERE status='pending' ORDER BY id ASC LIMIT 25");
+  return { jobs: rows };
+}
+
+async function printAck(body) {
+  if (!bridgeOk(body)) return { error: 'Unauthorized' };
+  const id = cleanInt(body.id);
+  if (id === null) return { error: 'Bad job id' };
+  if (body.ok) {
+    await pool.query("UPDATE print_jobs SET status='printed', printed_at=now() WHERE id=$1", [id]);
+  } else {
+    await pool.query("UPDATE print_jobs SET status='error', error=$2 WHERE id=$1",
+      [id, String(body.error || 'print failed').slice(0, 300)]);
+  }
+  return { ok: true };
+}
+
+// =================================================================
 // HTTP server
 // =================================================================
 
@@ -1343,7 +1445,7 @@ const STATIC_FILES = [
   'index.html', 'tv.html', 'sw.js', 'manifest.json',
   'logo.svg', 'bubbles-icon.png',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',
-  'jsbarcode.min.js', 'browserprint.min.js',
+  'jsbarcode.min.js',
 ];
 
 function sendStatic(res, name) {
@@ -1631,6 +1733,9 @@ app.post('/', async (req, res) => {
       case 'adminLogin':  out = await adminLogin(body); break;
       case 'adminSignup': out = await adminSignup(body); break;
       case 'adminLogout': out = await adminLogout(body); break;
+      // Print bridge (warehouse PC) — authenticated by PRINT_BRIDGE_TOKEN, not a user.
+      case 'printPoll':   out = await printPoll(body); break;
+      case 'printAck':    out = await printAck(body); break;
     }
     // Everything else resolves the caller once (admin token, employee PIN, or
     // break-glass Manager PIN) and passes that identity to the handler.
@@ -1683,6 +1788,9 @@ app.post('/', async (req, res) => {
         case 'getEom':       out = await getEom(who); break;
         case 'castEomVote':  out = await castEomVote(who, body.choice); break;
         case 'getEomLog':    out = await getEomLog(who); break;
+        // ----- Label Printer -----
+        case 'enqueuePrint':   out = await enqueuePrint(who, body); break;
+        case 'getPrintStatus': out = await getPrintStatus(who); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
