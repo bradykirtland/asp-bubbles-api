@@ -743,6 +743,9 @@
   .cl-arow .cl-abtns button { font-size:11px; padding:4px 9px; border-radius:6px; }
   .cl-arow.flagged .cl-amain { color:var(--danger); }
   .cl-acat { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .cl-reassign { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:4px 0 10px; padding:8px 10px; background:var(--bg); border:1px dashed var(--border); border-radius:8px; }
+  .cl-reassign label { font-size:12px; font-weight:600; color:var(--muted); }
+  .cl-reassign select { flex:1; min-width:150px; font:inherit; color:inherit; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:7px 11px; font-weight:600; cursor:pointer; }
 
   /* Filter bar (activity + checklist) */
   .filterbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
@@ -1349,6 +1352,7 @@
             <button class="primary" id="empSave">Save</button>
           </div>
         </div>
+        <p class="muted" style="font-size:12px; margin:0 0 10px;">“Remove from checklist” takes someone out of the nightly closing rotation. “Remove from voting” takes them out of Employee of the Month. “Remove from app” removes them everywhere (leaderboard, login, checklist, voting) but keeps their history — you can Restore them anytime.</p>
         <div class="alist" id="empAdminList"></div>
       </div>
 
@@ -3038,6 +3042,19 @@ async function submitChecklistNow() {
 
 // Shared run-card HTML. interactive=true adds Flag/Unflag buttons; checkboxes are
 // editable (Correct) only when interactive AND checkMode are both on.
+// Manager-only control to swap who's doing a not-yet-completed day's checklist.
+function reassignHtml(r) {
+  const emps = (state.checklistAdmin && state.checklistAdmin.employees) || [];
+  if (!emps.length) return "";
+  const known = emps.some(e => e.name === r.assignee);
+  const opts = (known ? "" : `<option value="" selected>${escapeHtml(r.assignee || "Unassigned")}</option>`)
+    + emps.map(e => `<option value="${e.id}"${e.name === r.assignee ? " selected" : ""}>${escapeHtml(e.name)}</option>`).join("");
+  return `<div class="cl-reassign">
+      <label for="clra-${r.id}">Doing it:</label>
+      <select id="clra-${r.id}" data-reassign-run="${r.id}">${opts}</select>
+    </div>`;
+}
+
 function runCardsHtml(runs, today, opts) {
   opts = opts || {};
   const interactive = !!opts.interactive;
@@ -3061,6 +3078,7 @@ function runCardsHtml(runs, today, opts) {
           </div>
         </div>
         <div class="cl-runbody" id="clrun-${r.id}" ${open ? "" : "hidden"}>
+          ${interactive && r.status !== "completed" ? reassignHtml(r) : ""}
           ${r.items.length ? groupByCategory(r.items).map(g => `
             <div class="cl-acat" style="margin-top:10px;">${escapeHtml(g.category)}</div>
             ${g.items.map(it => `
@@ -3094,6 +3112,12 @@ function wireRunCards(body) {
   body.querySelectorAll("[data-unflag]").forEach(b => b.addEventListener("click", (e) => {
     e.stopPropagation();
     adminChecklistAction("unflagChecklistItem", { itemId: parseInt(b.dataset.unflag, 10) });
+  }));
+  body.querySelectorAll("[data-reassign-run]").forEach(sel => sel.addEventListener("change", (e) => {
+    e.stopPropagation();
+    const empId = parseInt(sel.value, 10);
+    if (!empId) return;
+    adminChecklistAction("reassignChecklistRun", { runId: parseInt(sel.dataset.reassignRun, 10), employeeId: empId });
   }));
 }
 
@@ -3936,18 +3960,31 @@ function renderEmpAdmin() {
   const el = $("empAdminList");
   const emps = state.admin.employees;
   if (!emps.length) { el.innerHTML = `<div class="muted" style="font-size:13px;">No people yet. Tap “Add a person”.</div>`; return; }
-  el.innerHTML = emps.map(e => `
+  el.innerHTML = emps.map(e => {
+    const clOn = e.checklistEligible !== false;     // default-on if column missing
+    const voteOn = e.votingEligible !== false;
+    const badges = (e.active ? "" : `<span class="badge off">Off</span>`)
+      + (e.active && !clOn ? `<span class="badge off">No checklist</span>` : "")
+      + (e.active && !voteOn ? `<span class="badge off">No voting</span>` : "");
+    // Per-feature toggles only make sense for an active person.
+    const featureBtns = e.active ? `
+          <button class="ghost" data-cltoggle="${e.id}" data-on="${clOn ? 0 : 1}">${clOn ? "Remove from checklist" : "Add to checklist"}</button>
+          <button class="ghost" data-votetoggle="${e.id}" data-on="${voteOn ? 0 : 1}">${voteOn ? "Remove from voting" : "Add to voting"}</button>` : "";
+    return `
       <div class="arow ${e.active ? "" : "inactive"}">
         <div class="ainfo">
-          <div class="atitle">${escapeHtml(e.name)}${e.active ? "" : `<span class="badge off">Off</span>`}</div>
+          <div class="atitle">${escapeHtml(e.name)}${badges}</div>
           <div class="asub">PIN ${e.pin ? escapeHtml(e.pin) : "—"} · balance ${Number(e.balance).toLocaleString()}${e.email ? " · " + escapeHtml(e.email) : ""}</div>
         </div>
         <div class="aactions">
-          <button class="ghost" data-edit="${e.id}">Edit</button>
-          <button class="ghost" data-toggle="${e.id}" data-active="${e.active ? 0 : 1}">${e.active ? "Deactivate" : "Reactivate"}</button>
+          <button class="ghost" data-edit="${e.id}">Edit</button>${featureBtns}
+          <button class="ghost" data-toggle="${e.id}" data-active="${e.active ? 0 : 1}" title="${e.active ? "Removes them everywhere but keeps their history — you can restore them anytime." : "Bring this person back."}">${e.active ? "Remove from app" : "Restore"}</button>
         </div>
-      </div>`).join("");
+      </div>`;
+  }).join("");
   el.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => editEmp(parseInt(b.dataset.edit, 10))));
+  el.querySelectorAll("[data-cltoggle]").forEach(b => b.addEventListener("click", () => adminSave("setEmployeeChecklistEligible", { id: parseInt(b.dataset.cltoggle, 10), eligible: b.dataset.on === "1" })));
+  el.querySelectorAll("[data-votetoggle]").forEach(b => b.addEventListener("click", () => adminSave("setEmployeeVotingEligible", { id: parseInt(b.dataset.votetoggle, 10), eligible: b.dataset.on === "1" })));
   el.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", () => adminSave("setEmployeeActive", { id: parseInt(b.dataset.toggle, 10), active: b.dataset.active === "1" })));
 }
 function showEmpForm(e) {

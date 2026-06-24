@@ -30,7 +30,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '35';
+const APP_VERSION = '36';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -192,6 +192,25 @@ async function ensureSchema() {
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (period, voter_name)
     )`);
+
+  // Per-feature roster flags on employees. These let a manager take someone out
+  // of the closing-checklist rotation or out of Employee-of-the-Month voting
+  // WITHOUT fully deactivating them (which would also pull them from the
+  // leaderboard and block their login). Default true = behaves as before.
+  // One-time, at the moment the checklist flag is first created: take Angel out
+  // of the closing rotation (manager request). Done only here so a later manager
+  // toggle in Manage → People is respected and not overwritten on the next boot.
+  {
+    const { rows: cce } = await pool.query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'employees' AND column_name = 'checklist_eligible'`);
+    if (!cce.length) {
+      await pool.query(`ALTER TABLE employees ADD COLUMN checklist_eligible BOOLEAN NOT NULL DEFAULT true`);
+      const r = await pool.query(`UPDATE employees SET checklist_eligible = false WHERE name ILIKE 'angel%'`);
+      console.log(`Schema: added employees.checklist_eligible (removed ${r.rowCount} "Angel" from rotation).`);
+    }
+  }
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS voting_eligible BOOLEAN NOT NULL DEFAULT true`);
 
   // Clean up any not-yet-completed runs that landed on a closed day (e.g. a
   // Sunday run created before this rule existed). Leaves completed history alone.
@@ -830,7 +849,9 @@ async function getAdmin(who) {
         FROM rewards ORDER BY active DESC, id`),
     pool.query(`
       SELECT e.id, e.name, e.pin, e.email,
-             e.starting_balance AS "startingBalance", e.active, b.balance
+             e.starting_balance AS "startingBalance", e.active,
+             e.checklist_eligible AS "checklistEligible",
+             e.voting_eligible AS "votingEligible", b.balance
         FROM employees e JOIN balances b ON b.id = e.id
        ORDER BY e.active DESC, e.name`),
     pool.query(`
@@ -1007,6 +1028,26 @@ async function setEmployeeActive(who, id, active) {
   return { ok: true };
 }
 
+// Take someone in/out of the nightly closing-checklist rotation without
+// otherwise changing their account. Manager only.
+async function setEmployeeChecklistEligible(who, id, eligible) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const eid = cleanInt(id);
+  if (eid === null) return { error: 'Bad employee id' };
+  await pool.query(`UPDATE employees SET checklist_eligible=$1 WHERE id=$2`, [!!eligible, eid]);
+  return { ok: true };
+}
+
+// Take someone in/out of Employee-of-the-Month voting (as a candidate and a
+// voter) without otherwise changing their account. Manager only.
+async function setEmployeeVotingEligible(who, id, eligible) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const eid = cleanInt(id);
+  if (eid === null) return { error: 'Bad employee id' };
+  await pool.query(`UPDATE employees SET voting_eligible=$1 WHERE id=$2`, [!!eligible, eid]);
+  return { ok: true };
+}
+
 // ---------- Admin accounts (login / signup / management) ----------
 
 // Shared create path used by both public self-signup and manager "add admin".
@@ -1175,7 +1216,7 @@ async function ensureTodayRun() {
     const lastId = (last.length && last[0].employee_id != null) ? last[0].employee_id : -1;
     const pickSql = (excl) => `
       SELECT e.id FROM employees e
-       WHERE e.active = true ${excl ? 'AND e.id <> $1' : ''}
+       WHERE e.active = true AND e.checklist_eligible = true ${excl ? 'AND e.id <> $1' : ''}
        ORDER BY (SELECT MAX(run_date) FROM checklist_runs r WHERE r.employee_id = e.id) ASC NULLS FIRST, random()
        LIMIT 1`;
     let pick = await client.query(pickSql(true), [lastId]);
@@ -1278,7 +1319,11 @@ async function submitChecklist(who) {
 async function getChecklistAdmin(who) {
   if (!isManager(who)) return { error: 'Manager only' };
   await ensureTodayRun();
-  return { today: await todayStr(), runs: await runsWithItems(21) };
+  // Active people the manager can reassign a day to (anyone active — even if
+  // they're not normally in the rotation, e.g. covering for someone who's out).
+  const { rows: employees } = await pool.query(
+    'SELECT id, name FROM employees WHERE active = true ORDER BY name');
+  return { today: await todayStr(), runs: await runsWithItems(21), employees };
 }
 
 // Flag a task as missed/wrong, with an optional bubble deduction in one step.
@@ -1314,6 +1359,27 @@ async function unflagChecklistItem(who, itemId) {
   await pool.query(
     `UPDATE checklist_items SET flagged = false, flag_note = NULL, flagged_by = NULL, flagged_at = NULL WHERE id = $1`,
     [id]);
+  return { ok: true };
+}
+
+// Manager swaps who's doing a given day's checklist — e.g. the auto-assigned
+// person was out that day. Only a not-yet-completed run can be reassigned;
+// completed history is locked. Manager only.
+async function reassignChecklistRun(who, body) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  body = body || {};
+  const runId = cleanInt(body.runId);
+  const empId = cleanInt(body.employeeId);
+  if (runId === null) return { error: 'Bad checklist day' };
+  if (empId === null) return { error: 'Pick a person' };
+  const { rows: rr } = await pool.query('SELECT status FROM checklist_runs WHERE id = $1', [runId]);
+  if (!rr.length) return { error: 'Checklist not found' };
+  if (rr[0].status === 'completed') {
+    return { error: "That day's checklist is already completed — it can't be reassigned." };
+  }
+  const { rows: er } = await pool.query('SELECT 1 FROM employees WHERE id = $1 AND active = true', [empId]);
+  if (!er.length) return { error: 'That person is not an active employee' };
+  await pool.query('UPDATE checklist_runs SET employee_id = $1 WHERE id = $2', [empId, runId]);
   return { ok: true };
 }
 
@@ -1778,7 +1844,8 @@ async function eomMeta() {
 async function getEom(who) {
   if (!who) return { error: 'Not authorized' };
   const meta = await eomMeta();
-  const { rows: emps } = await pool.query('SELECT name FROM employees WHERE active = true ORDER BY name');
+  const { rows: emps } = await pool.query(
+    'SELECT name FROM employees WHERE active = true AND voting_eligible = true ORDER BY name');
   const candidates = emps.map(e => e.name);
   const { rows: tally } = await pool.query(
     `SELECT choice_name AS name, COUNT(*)::int AS votes FROM eom_votes
@@ -1816,8 +1883,9 @@ async function castEomVote(who, choice) {
   const pick = String(choice || '').trim();
   if (!pick) return { error: 'Pick a coworker.' };
   if (pick === who.name) return { error: "You can't vote for yourself." };
-  const { rows: ok } = await pool.query('SELECT 1 FROM employees WHERE name = $1 AND active = true', [pick]);
-  if (!ok.length) return { error: "That person isn't an active employee." };
+  const { rows: ok } = await pool.query(
+    'SELECT 1 FROM employees WHERE name = $1 AND active = true AND voting_eligible = true', [pick]);
+  if (!ok.length) return { error: "That person isn't in the voting list." };
   try {
     await pool.query('INSERT INTO eom_votes (period, voter_name, choice_name) VALUES ($1, $2, $3)',
       [meta.awardPeriod, who.name, pick]);
@@ -1903,6 +1971,8 @@ app.post('/', async (req, res) => {
         case 'addEmployee':       out = await addEmployee(who, body.employee); break;
         case 'updateEmployee':    out = await updateEmployee(who, body.employee); break;
         case 'setEmployeeActive': out = await setEmployeeActive(who, body.id, body.active); break;
+        case 'setEmployeeChecklistEligible': out = await setEmployeeChecklistEligible(who, body.id, body.eligible); break;
+        case 'setEmployeeVotingEligible':    out = await setEmployeeVotingEligible(who, body.id, body.eligible); break;
         case 'listAdmins':        out = await listAdmins(who); break;
         case 'addAdmin':          out = await addAdmin(who, body.admin); break;
         case 'updateAdmin':       out = await updateAdmin(who, body.admin); break;
@@ -1920,6 +1990,7 @@ app.post('/', async (req, res) => {
         case 'updateChecklistTask':  out = await updateChecklistTask(who, body.task); break;
         case 'setChecklistTaskActive': out = await setChecklistTaskActive(who, body.id, body.active); break;
         case 'resetChecklist':       out = await resetChecklist(who); break;
+        case 'reassignChecklistRun': out = await reassignChecklistRun(who, body); break;
         // ----- Box Counter -----
         case 'getBoxSizes':   out = await getBoxSizes(who); break;
         case 'saveBoxCount':  out = await saveBoxCount(who, body); break;
