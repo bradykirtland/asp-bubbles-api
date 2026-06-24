@@ -617,6 +617,14 @@
   .lp-actbar { display:flex; gap:8px; margin-bottom:10px; max-width:520px; }
   .lp-actbar input { flex:1; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:14px; }
   .lp-actbar select { padding:8px; border:1px solid var(--border); border-radius:8px; font-size:14px; }
+  .lp-day { border:1px solid var(--border); border-radius:10px; margin-bottom:8px; background:var(--surface); }
+  .lp-day > summary { cursor:pointer; padding:10px 12px; font-weight:600; list-style:none; }
+  .lp-day > summary::-webkit-details-marker { display:none; }
+  .lp-day > summary::before { content:"▸ "; color:var(--muted); }
+  .lp-day[open] > summary::before { content:"▾ "; }
+  .lp-day-body { padding:0 12px 8px; }
+  .lp-chain { border-left:3px solid var(--accent); padding-left:10px; margin:6px 0; }
+  .lp-chain-head { font-size:12px; color:var(--accent); font-weight:600; margin:4px 0; }
   .lp-steps { margin:10px 0 0; padding-left:20px; line-height:1.7; }
   #lpZpl { background:#0f172a; color:#cbd5e1; padding:10px; border-radius:8px; font-size:11px; overflow:auto; white-space:pre-wrap; margin-top:8px; }
 
@@ -1119,14 +1127,13 @@
       </div><!-- /lpPrintView -->
       <div id="lpActivityView" hidden>
         <h2 class="section" style="font-size:16px; margin-top:0;">Print activity</h2>
-        <div class="lp-actbar">
-          <input id="lpActSearch" type="text" autocomplete="off" placeholder="Search part # or person">
-          <select id="lpActSort">
-            <option value="recent">Recent</option>
-            <option value="day">By day</option>
-            <option value="person">By person</option>
-            <option value="part">By part #</option>
-          </select>
+        <div class="filterbar lp-actbar">
+          <input id="lpActSearch" type="text" autocomplete="off" placeholder="Search part #">
+          <label for="lpActName">Name</label>
+          <select id="lpActName"><option value="">All names</option></select>
+          <label for="lpActDate">Date</label>
+          <input type="date" id="lpActDate">
+          <button class="ghost" id="lpActClear">Clear</button>
         </div>
         <div id="lpActivityBody"></div>
       </div>
@@ -2091,7 +2098,7 @@ function showScreen(name) {
    (action "enqueuePrint"); a small "print bridge" on the warehouse PC polls the
    server and sends the ZPL to the printer over the LAN. Here we just enqueue and
    show whether that bridge/PC is currently online. */
-const lp = { last: null, batch: [], actJobs: [], actSearch: "", actSort: "recent" };
+const lp = { last: null, batch: [], actJobs: [], actSearch: "", actName: "", actDate: "" };
 
 function initLabelPrinter() {
   lpSetStatus("");
@@ -2199,9 +2206,9 @@ function lpSetStatus(msg, kind) {
 }
 
 // Send one label to the server (cloud, or PC-bridge fallback). Returns {ok, printed, error}.
-async function lpSendOne(code, qty) {
+async function lpSendOne(code, qty, batchId) {
   try {
-    const res = await apiCall("enqueuePrint", { pin: session.pin, code: code, qty: qty });
+    const res = await apiCall("enqueuePrint", { pin: session.pin, code: code, qty: qty, batchId: batchId || null });
     if (res && res.error) return { ok: false, error: res.error };
     return { ok: true, printed: !!(res && (res.printed || res.via === "cloud" || res.bridgeOnline)) };
   } catch (e) {
@@ -2286,11 +2293,12 @@ async function lpPrintBatch() {
   }
   if (!lp.batch.length) { lpSetStatus("Scan or type a part number first.", "err"); return; }
   const items = lp.batch.slice();
+  const batchId = items.length > 1 ? ("b" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)) : null;
   $("lpPrint").disabled = true; $("lpAdd").disabled = true;
   lpSetStatus("Sending " + items.length + " item" + (items.length === 1 ? "" : "s") + "…");
   let ok = 0, fail = 0, lastErr = "";
   for (const it of items) {
-    const r = await lpSendOne(it.code, it.qty);
+    const r = await lpSendOne(it.code, it.qty, batchId);
     if (r.ok) ok++; else { fail++; lastErr = r.error || "failed"; }
   }
   lp.last = items.length === 1 ? { code: items[0].code, qty: items[0].qty } : null;
@@ -2330,27 +2338,65 @@ async function lpLoadActivity() {
     const r = await apiCall("getPrintLog", { pin: session.pin });
     if (!r || r.error) { box.innerHTML = '<div class="empty">' + escapeHtml((r && r.error) || "Couldn't load.") + '</div>'; return; }
     lp.actJobs = r.jobs || [];
+    lpFillActNames();
     lpRenderActivity();
   } catch (e) { box.innerHTML = '<div class="empty">Couldn\'t load.</div>'; }
 }
 
+// Fill the Name dropdown with the distinct people who have printed.
+function lpFillActNames() {
+  const sel = $("lpActName");
+  if (!sel) return;
+  const names = Array.from(new Set((lp.actJobs || []).map(j => j.who).filter(Boolean))).sort();
+  const cur = lp.actName || "";
+  sel.innerHTML = '<option value="">All names</option>' +
+    names.map(n => '<option value="' + escapeHtml(n) + '"' + (n === cur ? ' selected' : '') + '>' + escapeHtml(n) + '</option>').join("");
+}
+
+function lpActRow(j) {
+  const st = j.status === "printed" ? "✓ printed" : (j.status === "error" ? "✗ error" : (j.status === "pending" ? "queued" : escapeHtml(j.status)));
+  const cls = j.status === "printed" ? "lp-ok" : (j.status === "error" ? "lp-err2" : "lp-muted");
+  return '<div class="lp-act"><div class="lp-act-main"><b>' + escapeHtml(j.code) + '</b> × ' + j.qty +
+    ' <span class="' + cls + '">' + st + '</span></div><div class="lp-act-sub">' +
+    escapeHtml(j.who) + ' · ' + escapeHtml(j.at || '') + (j.error ? ' · ' + escapeHtml(j.error) : '') + '</div></div>';
+}
+
+function lpDayLabel(d) {
+  try { return new Date(d + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }); }
+  catch (_) { return d; }
+}
+
+// Group by day (collapsible), and within a day group same-batch prints (a "chain").
 function lpRenderActivity() {
   const box = $("lpActivityBody");
-  let jobs = (lp.actJobs || []).slice();
+  let jobs = (lp.actJobs || []).slice();              // already id-desc from the server
   const q = (lp.actSearch || "").trim().toLowerCase();
   if (q) jobs = jobs.filter(j => (String(j.code || "").toLowerCase().indexOf(q) >= 0) || (String(j.who || "").toLowerCase().indexOf(q) >= 0));
-  const sort = lp.actSort || "recent";
-  if (sort === "day") jobs.sort((a, b) => String(b.day || "").localeCompare(String(a.day || "")) || (b.id - a.id));
-  else if (sort === "person") jobs.sort((a, b) => String(a.who || "").localeCompare(String(b.who || "")) || (b.id - a.id));
-  else if (sort === "part") jobs.sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), undefined, { numeric: true }) || (b.id - a.id));
-  else jobs.sort((a, b) => b.id - a.id);
+  if (lp.actName) jobs = jobs.filter(j => j.who === lp.actName);
+  if (lp.actDate) jobs = jobs.filter(j => j.day === lp.actDate);
   if (!jobs.length) { box.innerHTML = '<div class="empty">' + (lp.actJobs && lp.actJobs.length ? "No matches." : "No prints yet.") + '</div>'; return; }
-  box.innerHTML = jobs.map(function (j) {
-    const st = j.status === "printed" ? "✓ printed" : (j.status === "error" ? "✗ error" : (j.status === "pending" ? "queued" : escapeHtml(j.status)));
-    const cls = j.status === "printed" ? "lp-ok" : (j.status === "error" ? "lp-err2" : "lp-muted");
-    return '<div class="lp-act"><div class="lp-act-main"><b>' + escapeHtml(j.code) + '</b> × ' + j.qty +
-      ' <span class="' + cls + '">' + st + '</span></div><div class="lp-act-sub">' +
-      escapeHtml(j.who) + ' · ' + escapeHtml(j.at || '') + (j.error ? ' · ' + escapeHtml(j.error) : '') + '</div></div>';
+
+  const dayOrder = [], byDay = {};
+  jobs.forEach(j => { const d = j.day || "—"; if (!byDay[d]) { byDay[d] = []; dayOrder.push(d); } byDay[d].push(j); });
+
+  box.innerHTML = dayOrder.map(function (d, di) {
+    const dayJobs = byDay[d];
+    const items = dayJobs.reduce((s, j) => s + (j.qty || 0), 0);
+    // group by batch within the day
+    const bOrder = [], byBatch = {};
+    dayJobs.forEach(j => { const b = j.batch || ("one-" + j.id); if (!byBatch[b]) { byBatch[b] = []; bOrder.push(b); } byBatch[b].push(j); });
+    const body = bOrder.map(function (b) {
+      const grp = byBatch[b];
+      if (grp.length > 1) {
+        const labels = grp.reduce((s, j) => s + (j.qty || 0), 0);
+        const head = '🧾 Printed together · ' + escapeHtml(grp[0].who) + ' · ' + escapeHtml(grp[0].at || '') + ' · ' + labels + ' labels';
+        return '<div class="lp-chain"><div class="lp-chain-head">' + head + '</div>' + grp.map(lpActRow).join("") + '</div>';
+      }
+      return lpActRow(grp[0]);
+    }).join("");
+    return '<details class="lp-day"' + (di === 0 ? " open" : "") + '><summary>' + lpDayLabel(d) +
+      ' · ' + dayJobs.length + ' item' + (dayJobs.length === 1 ? "" : "s") + ' · ' + items + ' labels</summary>' +
+      '<div class="lp-day-body">' + body + '</div></details>';
   }).join("");
 }
 
@@ -4089,7 +4135,13 @@ $("lpcSave").addEventListener("click", lpSaveCloudSettings);
 $("lpUseRefresh").addEventListener("click", lpLoadUsage);
 document.querySelectorAll("#lpNav .navbtn").forEach(b => b.addEventListener("click", () => switchLpTab(b.dataset.lptab)));
 $("lpActSearch").addEventListener("input", () => { lp.actSearch = $("lpActSearch").value; lpRenderActivity(); });
-$("lpActSort").addEventListener("change", () => { lp.actSort = $("lpActSort").value; lpRenderActivity(); });
+$("lpActName").addEventListener("change", () => { lp.actName = $("lpActName").value; lpRenderActivity(); });
+$("lpActDate").addEventListener("change", () => { lp.actDate = $("lpActDate").value; lpRenderActivity(); });
+$("lpActClear").addEventListener("click", () => {
+  lp.actSearch = ""; lp.actName = ""; lp.actDate = "";
+  $("lpActSearch").value = ""; $("lpActName").value = ""; $("lpActDate").value = "";
+  lpRenderActivity();
+});
 $("eomLogPeriod").addEventListener("change", () => { state.eomLogPeriod = $("eomLogPeriod").value; renderEomLog(); });
 document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);

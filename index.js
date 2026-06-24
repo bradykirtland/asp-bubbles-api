@@ -30,7 +30,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '29';
+const APP_VERSION = '30';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -218,6 +218,7 @@ async function ensureSchema() {
       printed_at   TIMESTAMPTZ
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS print_jobs_status_idx ON print_jobs(status, id)`);
+  await pool.query(`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS batch_id TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS print_bridge (
       id        INTEGER PRIMARY KEY,
@@ -1418,9 +1419,10 @@ async function enqueuePrint(who, body) {
   // for `code` here instead of the placeholder.
   const description = 'PLACEHOLDER';
   const zpl = buildLabelZpl(code, qty, description);
+  const batchId = (body && body.batchId) ? String(body.batchId).slice(0, 40) : null;
   const { rows } = await pool.query(
-    'INSERT INTO print_jobs (code, qty, zpl, requested_by) VALUES ($1,$2,$3,$4) RETURNING id',
-    [code, qty, zpl, who.name || null]);
+    'INSERT INTO print_jobs (code, qty, zpl, requested_by, batch_id) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+    [code, qty, zpl, who.name || null, batchId]);
   const jobId = rows[0].id;
 
   // Preferred path: Zebra cloud (no PC). Falls back to the warehouse-PC bridge if cloud isn't set up.
@@ -1467,7 +1469,7 @@ async function getPrintLog(who) {
   const { rows } = await pool.query(
     "SELECT id, code, qty, status, COALESCE(requested_by,'(unknown)') AS who, " +
     "to_char(created_at AT TIME ZONE 'America/Los_Angeles', 'Mon DD HH12:MI AM') AS at, " +
-    "(created_at AT TIME ZONE 'America/Los_Angeles')::date::text AS day, error " +
+    "(created_at AT TIME ZONE 'America/Los_Angeles')::date::text AS day, batch_id AS batch, error " +
     "FROM print_jobs ORDER BY id DESC LIMIT 200");
   return { jobs: rows };
 }
