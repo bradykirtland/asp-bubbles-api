@@ -603,6 +603,15 @@
   .lp-clab { display:block; margin:5px 0; font-size:12px; font-weight:600; color:var(--muted); }
   .lp-clab input { display:block; width:100%; padding:6px 8px; margin-top:2px; border:1px solid var(--border); border-radius:6px; font-size:13px; }
   .lp-ccheck { display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px; font-weight:600; }
+  .lp-tabs { display:flex; gap:6px; margin-bottom:14px; max-width:520px; margin-left:auto; margin-right:auto; }
+  .lp-tab { flex:1; padding:9px; border:1px solid var(--border); background:var(--surface); border-radius:10px; font-weight:600; cursor:pointer; color:var(--muted); font-size:14px; }
+  .lp-tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .lp-act { padding:8px 2px; border-bottom:1px solid var(--border); }
+  .lp-act-main { font-size:14px; }
+  .lp-act-sub { font-size:12px; color:var(--muted); margin-top:1px; }
+  .lp-ok { color:var(--good); font-weight:600; }
+  .lp-err2 { color:var(--danger); font-weight:600; }
+  .lp-muted { color:var(--muted); }
   .lp-steps { margin:10px 0 0; padding-left:20px; line-height:1.7; }
   #lpZpl { background:#0f172a; color:#cbd5e1; padding:10px; border-radius:8px; font-size:11px; overflow:auto; white-space:pre-wrap; margin-top:8px; }
 
@@ -1036,6 +1045,11 @@
   <!-- ===== Label Printer app ===== -->
   <div id="labelScreen" hidden>
     <div class="lp-wrap">
+      <div class="lp-tabs">
+        <button class="lp-tab active" data-lptab="print">Print</button>
+        <button class="lp-tab" data-lptab="activity" id="lpTabActivity" hidden>Activity</button>
+      </div>
+      <div id="lpPrintView">
       <div class="lp-hint">Scan a part barcode (or type the number), set the quantity, then tap Print. Labels print on the Zebra ZQ620.</div>
       <label class="lp-field">
         <span class="lp-lab">Part barcode</span>
@@ -1096,6 +1110,12 @@
           </ul>
         </div>
       </details>
+      </div><!-- /lpPrintView -->
+      <div id="lpActivityView" hidden>
+        <h2 class="section" style="font-size:16px; margin-top:0;">Print activity</h2>
+        <div class="lp-hint" style="margin-bottom:10px;">Who printed what, when, and the result (most recent first).</div>
+        <div id="lpActivityBody"></div>
+      </div>
     </div>
   </div>
 
@@ -2038,6 +2058,7 @@ function initLabelPrinter() {
   lpRenderPreview();
   $("lpReprint").hidden = !lp.last;
   setTimeout(() => { try { $("lpCode").focus(); } catch (_) {} }, 60);
+  switchLpTab("print");
   lpDetectPrinter();
   lpLoadCloudSettings();
   lpLoadUsage();
@@ -2117,6 +2138,9 @@ function lpShowPrinterStatus(s) {
     if (s.bridgeToken) { $("lpToken").textContent = s.bridgeToken; row.hidden = false; }
     else { row.hidden = true; }
   }
+  // The Activity tab is manager-only (bridgeToken is only returned to managers).
+  const at = $("lpTabActivity");
+  if (at) at.hidden = !s.bridgeToken;
 }
 
 function lpSetStatus(msg, kind) {
@@ -2160,6 +2184,31 @@ function lpReprintLast() {
 }
 
 function lpTestPrint() { lpPrint("TEST-123", "Test label queued"); }
+
+function switchLpTab(name) {
+  document.querySelectorAll(".lp-tab").forEach(b => b.classList.toggle("active", b.dataset.lptab === name));
+  $("lpPrintView").hidden = name !== "print";
+  $("lpActivityView").hidden = name !== "activity";
+  if (name === "activity") lpLoadActivity();
+}
+
+// Manager-only: recent print activity (who printed what, when, result).
+async function lpLoadActivity() {
+  const box = $("lpActivityBody");
+  box.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const r = await apiCall("getPrintLog", { pin: session.pin });
+    if (!r || r.error) { box.innerHTML = '<div class="empty">' + escapeHtml((r && r.error) || "Couldn't load.") + '</div>'; return; }
+    if (!r.jobs || !r.jobs.length) { box.innerHTML = '<div class="empty">No prints yet.</div>'; return; }
+    box.innerHTML = r.jobs.map(function (j) {
+      const st = j.status === "printed" ? "✓ printed" : (j.status === "error" ? "✗ error" : (j.status === "pending" ? "queued" : escapeHtml(j.status)));
+      const cls = j.status === "printed" ? "lp-ok" : (j.status === "error" ? "lp-err2" : "lp-muted");
+      return '<div class="lp-act"><div class="lp-act-main"><b>' + escapeHtml(j.code) + '</b> ×' + j.qty +
+        ' <span class="' + cls + '">' + st + '</span></div><div class="lp-act-sub">' +
+        escapeHtml(j.who) + ' · ' + escapeHtml(j.at || '') + (j.error ? ' · ' + escapeHtml(j.error) : '') + '</div></div>';
+    }).join("");
+  } catch (e) { box.innerHTML = '<div class="empty">Couldn\'t load.</div>'; }
+}
 
 // Manager-only: daily print usage vs the 100/day cloud limit.
 async function lpLoadUsage() {
@@ -3888,6 +3937,7 @@ $("lpCopyToken").addEventListener("click", () => {
 });
 $("lpcSave").addEventListener("click", lpSaveCloudSettings);
 $("lpUseRefresh").addEventListener("click", lpLoadUsage);
+document.querySelectorAll(".lp-tab").forEach(b => b.addEventListener("click", () => switchLpTab(b.dataset.lptab)));
 $("eomLogPeriod").addEventListener("change", () => { state.eomLogPeriod = $("eomLogPeriod").value; renderEomLog(); });
 document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);

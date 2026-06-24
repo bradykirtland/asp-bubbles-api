@@ -30,7 +30,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '26';
+const APP_VERSION = '27';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -1461,6 +1461,16 @@ async function getPrintUsage(who) {
   return { today: today.rows[0].n, limit: 100, days: days.rows, byUser: byUser.rows };
 }
 
+// Manager view: recent print activity — who printed what, when, and the result.
+async function getPrintLog(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const { rows } = await pool.query(
+    "SELECT id, code, qty, status, COALESCE(requested_by,'(unknown)') AS who, " +
+    "to_char(created_at AT TIME ZONE 'America/Los_Angeles', 'Mon DD HH12:MI AM') AS at, error " +
+    "FROM print_jobs ORDER BY id DESC LIMIT 200");
+  return { jobs: rows };
+}
+
 // ----- Bridge-facing (authenticated by the bridge token, not a user) -----
 async function currentBridgeToken() {
   const { rows } = await pool.query('SELECT token FROM print_bridge WHERE id = 1');
@@ -1917,6 +1927,7 @@ app.post('/', async (req, res) => {
         case 'getCloudSettings': out = await getCloudSettings(who); break;
         case 'setCloudSettings': out = await setCloudSettings(who, body); break;
         case 'getPrintUsage':    out = await getPrintUsage(who); break;
+        case 'getPrintLog':      out = await getPrintLog(who); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
