@@ -600,6 +600,9 @@
   .lp-setup summary { cursor:pointer; font-weight:600; }
   .lp-setupbody { padding-top:10px; }
   .lp-mini { padding:5px 10px; font-size:12px; margin-left:6px; }
+  .lp-clab { display:block; margin:5px 0; font-size:12px; font-weight:600; color:var(--muted); }
+  .lp-clab input { display:block; width:100%; padding:6px 8px; margin-top:2px; border:1px solid var(--border); border-radius:6px; font-size:13px; }
+  .lp-ccheck { display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px; font-weight:600; }
   .lp-steps { margin:10px 0 0; padding-left:20px; line-height:1.7; }
   #lpZpl { background:#0f172a; color:#cbd5e1; padding:10px; border-radius:8px; font-size:11px; overflow:auto; white-space:pre-wrap; margin-top:8px; }
 
@@ -1073,7 +1076,15 @@
             <code id="lpToken" style="word-break:break-all; font-size:12px;">—</code>
             <button class="ghost lp-mini" id="lpCopyToken">Copy</button>
           </div>
-          <p style="margin:8px 0 4px;">Printing works on <b>any device</b> — nothing to install. Labels are queued on the server and printed by the warehouse PC.</p>
+          <div id="lpCloudRow" hidden style="margin:6px 0; padding:10px 12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;">
+            <div style="font-weight:600; margin-bottom:6px;">☁️ Cloud printing <span style="font-weight:400;">(managers) — print with no warehouse PC</span></div>
+            <label class="lp-clab">API key <input id="lpcApiKey" type="password" autocomplete="off" placeholder="paste API key"></label>
+            <label class="lp-clab">Tenant ID <input id="lpcTenant" type="text" autocomplete="off"></label>
+            <label class="lp-clab">Printer serial <input id="lpcSerial" type="text" autocomplete="off"></label>
+            <label class="lp-ccheck"><input id="lpcEnabled" type="checkbox"> Use cloud printing</label>
+            <div style="margin-top:6px;"><button class="ghost lp-mini" id="lpcSave">Save</button> <span id="lpcMsg" style="font-size:12px; color:var(--muted);"></span></div>
+          </div>
+          <p style="margin:8px 0 4px;">Printing works on <b>any device</b> — nothing to install. Labels print via Zebra's cloud (once set up above), or via the warehouse PC bridge as a fallback.</p>
           <ul class="lp-steps">
             <li>If status shows <b>Offline</b>, make sure the <b>warehouse print PC is on</b> (it runs the small print bridge). Jobs wait in line and print once it's back on.</li>
             <li>On a scanner handheld (e.g. the C61), set the scanner to <b>keyboard / keystroke output</b> mode so scans type into the box above.</li>
@@ -2023,6 +2034,7 @@ function initLabelPrinter() {
   $("lpReprint").hidden = !lp.last;
   setTimeout(() => { try { $("lpCode").focus(); } catch (_) {} }, 60);
   lpDetectPrinter();
+  lpLoadCloudSettings();
 }
 
 // Strip characters that aren't valid in a scanned part number / would break ZPL.
@@ -2083,11 +2095,14 @@ async function lpDetectPrinter() {
 function lpShowPrinterStatus(s) {
   const el = $("lpPrinter");
   if (!el || !s) return;
-  if (s.bridgeOnline) {
+  if (s.cloudEnabled) {
+    el.textContent = "Cloud printing: on ✓";
+    el.className = "lp-on";
+  } else if (s.bridgeOnline) {
     el.textContent = "Online ✓" + (s.pending ? (" · " + s.pending + " in queue") : "");
     el.className = "lp-on";
   } else {
-    el.textContent = "Offline — the warehouse print PC may be off" + (s.pending ? (" · " + s.pending + " waiting") : "");
+    el.textContent = "Offline — start the print PC, or set up Cloud printing below" + (s.pending ? (" · " + s.pending + " waiting") : "");
     el.className = "lp-off";
   }
   // Managers get the bridge token to paste into the warehouse PC script.
@@ -2117,12 +2132,11 @@ async function lpPrint(codeOverride, label) {
     const res = await apiCall("enqueuePrint", { pin: session.pin, code: code, qty: qty });
     if (res && res.error) { lpSetStatus(res.error, "err"); return; }
     if (codeOverride == null) { lp.last = { code: code, qty: qty }; $("lpReprint").hidden = false; }
-    if (res && res.bridgeOnline) {
+    if (res && (res.printed || res.via === "cloud" || res.bridgeOnline)) {
       lpSetStatus((label || ("Printing " + qty + " × " + code)) + " ✓", "ok");
     } else {
-      lpSetStatus("Queued — will print when the warehouse PC is back online.", "warn");
+      lpSetStatus("Queued — will print when the printer is back online.", "warn");
     }
-    lpShowPrinterStatus(res);
     try { const ci = $("lpCode"); ci.focus(); ci.select(); } catch (_) {}
   } catch (e) {
     lpSetStatus((e && e.message) ? e.message : "Couldn't reach the server.", "err");
@@ -2140,6 +2154,39 @@ function lpReprintLast() {
 }
 
 function lpTestPrint() { lpPrint("TEST-123", "Test label queued"); }
+
+// Manager-only cloud-printing settings (Zebra SendFileToPrinter).
+async function lpLoadCloudSettings() {
+  const row = $("lpCloudRow");
+  if (!row) return;
+  try {
+    const s = await apiCall("getCloudSettings", { pin: session.pin });
+    if (!s || s.error) { row.hidden = true; return; }   // not a manager
+    row.hidden = false;
+    $("lpcTenant").value = s.tenant || "";
+    $("lpcSerial").value = s.serial || "";
+    $("lpcEnabled").checked = !!s.enabled;
+    $("lpcApiKey").value = "";
+    $("lpcApiKey").placeholder = s.hasApiKey ? "•••••• saved (leave blank to keep)" : "paste API key";
+  } catch (_) { row.hidden = true; }
+}
+async function lpSaveCloudSettings() {
+  $("lpcMsg").textContent = "Saving…";
+  try {
+    const res = await apiCall("setCloudSettings", {
+      pin: session.pin,
+      apiKey: $("lpcApiKey").value,
+      tenant: $("lpcTenant").value,
+      serial: $("lpcSerial").value,
+      enabled: $("lpcEnabled").checked
+    });
+    if (res && res.error) { $("lpcMsg").textContent = res.error; return; }
+    $("lpcApiKey").value = "";
+    $("lpcApiKey").placeholder = res.hasApiKey ? "•••••• saved (leave blank to keep)" : "paste API key";
+    $("lpcMsg").textContent = "Saved ✓";
+    lpDetectPrinter();
+  } catch (e) { $("lpcMsg").textContent = "Couldn't save."; }
+}
 
 // Open the Bubbles app on its default tab.
 function openBubbles() {
@@ -3811,6 +3858,7 @@ $("lpCopyToken").addEventListener("click", () => {
   const t = ($("lpToken").textContent || "").trim();
   if (t && navigator.clipboard) navigator.clipboard.writeText(t).then(() => lpSetStatus("Token copied ✓", "ok"), () => {});
 });
+$("lpcSave").addEventListener("click", lpSaveCloudSettings);
 $("eomLogPeriod").addEventListener("change", () => { state.eomLogPeriod = $("eomLogPeriod").value; renderEomLog(); });
 document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);

@@ -30,7 +30,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '24';
+const APP_VERSION = '25';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -235,6 +235,19 @@ async function ensureSchema() {
         [crypto.randomBytes(24).toString('hex')]);
     }
   }
+
+  // Cloud printing (Zebra SendFileToPrinter) — credentials are entered by a manager
+  // in the app (stored here, never in the public repo).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cloud_print (
+      id         INTEGER PRIMARY KEY,
+      api_key    TEXT,
+      tenant_id  TEXT,
+      serial     TEXT,
+      enabled    BOOLEAN NOT NULL DEFAULT false,
+      updated_at TIMESTAMPTZ
+    )`);
+  await pool.query(`INSERT INTO cloud_print (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
 }
 
 // =================================================================
@@ -1408,13 +1421,27 @@ async function enqueuePrint(who, body) {
   const { rows } = await pool.query(
     'INSERT INTO print_jobs (code, qty, zpl, requested_by) VALUES ($1,$2,$3,$4) RETURNING id',
     [code, qty, zpl, who.name || null]);
-  return { ok: true, jobId: rows[0].id, qty, code, bridgeOnline: await bridgeOnline() };
+  const jobId = rows[0].id;
+
+  // Preferred path: Zebra cloud (no PC). Falls back to the warehouse-PC bridge if cloud isn't set up.
+  const cfg = await getCloudConfig();
+  if (cloudConfigured(cfg)) {
+    const res = await sendViaCloud(cfg, zpl);
+    if (res.ok) {
+      await pool.query("UPDATE print_jobs SET status='printed', printed_at=now() WHERE id=$1", [jobId]);
+      return { ok: true, jobId, qty, code, via: 'cloud', printed: true };
+    }
+    await pool.query("UPDATE print_jobs SET status='error', error=$2 WHERE id=$1", [jobId, String(res.error || 'cloud send failed').slice(0, 300)]);
+    return { ok: false, jobId, qty, code, via: 'cloud', error: res.error || 'Cloud print failed' };
+  }
+  return { ok: true, jobId, qty, code, via: 'bridge', bridgeOnline: await bridgeOnline() };
 }
 
 async function getPrintStatus(who) {
   if (!who) return { error: 'Please sign in.' };
   const { rows } = await pool.query("SELECT COUNT(*)::int AS pending FROM print_jobs WHERE status = 'pending'");
-  const out = { bridgeOnline: await bridgeOnline(), pending: rows[0].pending };
+  const cfg = await getCloudConfig();
+  const out = { bridgeOnline: await bridgeOnline(), pending: rows[0].pending, cloudEnabled: cloudConfigured(cfg) };
   // Only a manager may see the bridge token (to paste into the warehouse PC script).
   if (isManager(who)) out.bridgeToken = await currentBridgeToken();
   return out;
@@ -1432,6 +1459,56 @@ async function bridgeOk(body) {
   if (BRIDGE_TOKEN && supplied === BRIDGE_TOKEN) return true;     // optional env override
   const tok = await currentBridgeToken();
   return !!tok && supplied === tok;
+}
+
+// ----- Cloud printing (Zebra SendFileToPrinter) -----
+async function getCloudConfig() {
+  const { rows } = await pool.query('SELECT api_key, tenant_id, serial, enabled FROM cloud_print WHERE id = 1');
+  return rows[0] || {};
+}
+function cloudConfigured(cfg) {
+  return !!(cfg && cfg.enabled && cfg.api_key && cfg.tenant_id && cfg.serial);
+}
+
+// POST the label (ZPL) to Zebra's cloud, which relays it to the registered printer.
+async function sendViaCloud(cfg, zpl) {
+  try {
+    const form = new FormData();
+    form.append('sn', cfg.serial);
+    form.append('zpl_file', new Blob([zpl], { type: 'text/plain' }), 'label.zpl');
+    const r = await fetch('https://api.zebra.com/v2/devices/printers/send', {
+      method: 'POST',
+      headers: { apikey: cfg.api_key, tenant: cfg.tenant_id },
+      body: form
+    });
+    if (r.ok) return { ok: true };
+    const txt = await r.text().catch(() => '');
+    return { ok: false, error: 'Zebra cloud error ' + r.status + (txt ? ': ' + txt.slice(0, 160) : '') };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) ? e.message : 'cloud request failed' };
+  }
+}
+
+// Manager-only settings. The API key is write-only — never sent back to the browser.
+async function getCloudSettings(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const cfg = await getCloudConfig();
+  return { enabled: !!cfg.enabled, hasApiKey: !!cfg.api_key, tenant: cfg.tenant_id || '', serial: cfg.serial || '' };
+}
+async function setCloudSettings(who, body) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const tenant = String(body && body.tenant || '').trim().slice(0, 120);
+  const serial = String(body && body.serial || '').trim().slice(0, 120);
+  const enabled = !!(body && body.enabled);
+  const newKey = (body && body.apiKey != null) ? String(body.apiKey).trim() : '';
+  if (newKey) {
+    await pool.query('UPDATE cloud_print SET api_key=$1, tenant_id=$2, serial=$3, enabled=$4, updated_at=now() WHERE id=1',
+      [newKey.slice(0, 300), tenant, serial, enabled]);
+  } else {
+    await pool.query('UPDATE cloud_print SET tenant_id=$1, serial=$2, enabled=$3, updated_at=now() WHERE id=1',
+      [tenant, serial, enabled]);
+  }
+  return await getCloudSettings(who);
 }
 
 // Bridge polls this: records a heartbeat, expires very old jobs (so a PC that
@@ -1823,6 +1900,8 @@ app.post('/', async (req, res) => {
         // ----- Label Printer -----
         case 'enqueuePrint':   out = await enqueuePrint(who, body); break;
         case 'getPrintStatus': out = await getPrintStatus(who); break;
+        case 'getCloudSettings': out = await getCloudSettings(who); break;
+        case 'setCloudSettings': out = await setCloudSettings(who, body); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }
     }
