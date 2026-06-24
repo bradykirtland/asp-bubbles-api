@@ -576,6 +576,10 @@
   #lpCode { font-size:22px; font-weight:700; padding:14px 16px; border:2px solid var(--accent); border-radius:var(--radius); background:var(--surface); letter-spacing:.5px; width:100%; }
   #lpCode:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
   .lp-qtyrow { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .lp-qtygrp { display:flex; align-items:center; gap:10px; }
+  .lp-cancel { height:48px; min-width:110px; border:1px solid var(--border); border-radius:12px; background:var(--surface); font-size:15px; font-weight:600; cursor:pointer; color:var(--text); }
+  .lp-cancel:active { background:var(--bg); }
+  #lpClear { width:100%; margin-top:8px; }
   .lp-stepper { display:flex; align-items:center; }
   .lp-stepper button { width:48px; height:48px; font-size:24px; font-weight:700; border:1px solid var(--border); background:var(--surface); color:var(--accent); cursor:pointer; }
   .lp-stepper button:first-child { border-radius:12px 0 0 12px; }
@@ -1065,13 +1069,17 @@
         <input id="lpCode" type="text" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Scan here… or type e.g. 6000-362">
       </label>
       <div class="lp-qtyrow">
-        <span class="lp-lab">Quantity</span>
-        <div class="lp-stepper">
-          <button type="button" id="lpMinus" aria-label="Fewer">−</button>
-          <input id="lpQty" type="number" min="1" max="999" value="1" inputmode="numeric">
-          <button type="button" id="lpPlus" aria-label="More">＋</button>
+        <button class="lp-cancel" id="lpCancel">Cancel</button>
+        <div class="lp-qtygrp">
+          <span class="lp-lab">Quantity</span>
+          <div class="lp-stepper">
+            <button type="button" id="lpMinus" aria-label="Fewer">−</button>
+            <input id="lpQty" type="number" min="1" max="999" value="1" inputmode="numeric">
+            <button type="button" id="lpPlus" aria-label="More">＋</button>
+          </div>
         </div>
       </div>
+      <button class="ghost" id="lpClear" hidden>Clear</button>
       <div class="lp-previewwrap">
         <div class="lp-label">
           <div class="lp-desc" id="lpDesc">PLACEHOLDER</div>
@@ -2284,6 +2292,20 @@ function lpUpdatePrintLabel() {
   $("lpPrint").textContent = n > 1 ? ("🖨️ Print " + n + " items") : "🖨️ Print label";
   $("lpPrint").disabled = n === 0;
   $("lpAdd").disabled = cur === 0;
+  const cl = $("lpClear"); if (cl) cl.hidden = n === 0;   // Clear shows once something's scanned/queued
+}
+
+// Cancel = discard just the current scan. Clear = wipe everything (current + batch).
+function lpCancelCurrent() {
+  $("lpCode").value = ""; $("lpQty").value = "1";
+  lpRenderPreview();
+  try { $("lpCode").focus(); } catch (_) {}
+}
+function lpClearAll() {
+  $("lpCode").value = ""; $("lpQty").value = "1";
+  lp.batch = []; lpRenderBatch();
+  lpRenderPreview(); lpSetStatus("");
+  try { $("lpCode").focus(); } catch (_) {}
 }
 
 // Print everything: the queued batch plus whatever's currently in the box.
@@ -4118,6 +4140,8 @@ $("lpQty").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preve
 $("lpMinus").addEventListener("click", () => { $("lpQty").value = Math.max(1, lpQtyVal() - 1); lpRenderPreview(); });
 $("lpPlus").addEventListener("click", () => { $("lpQty").value = Math.min(999, lpQtyVal() + 1); lpRenderPreview(); });
 $("lpAdd").addEventListener("click", lpAddToBatch);
+$("lpCancel").addEventListener("click", lpCancelCurrent);
+$("lpClear").addEventListener("click", lpClearAll);
 $("lpPrint").addEventListener("click", lpPrintBatch);
 $("lpReprint").addEventListener("click", lpReprintLast);
 $("lpBatchList").addEventListener("click", (e) => { const b = e.target.closest(".lp-bx"); if (b) lpRemoveBatch(parseInt(b.dataset.bi, 10)); });
