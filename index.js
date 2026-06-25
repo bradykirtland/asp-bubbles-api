@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '39';
+const APP_VERSION = '40';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -281,6 +281,10 @@ async function ensureSchema() {
       private_key TEXT,
       subject     TEXT
     )`);
+  // Master on/off switch for the whole notifications feature, flipped by a
+  // manager in the app. Default OFF — the feature ships dormant (proof of
+  // concept) until a manager turns it on.
+  await pool.query(`ALTER TABLE push_keys ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT false`);
   // Each device that opts in stores its push subscription here, tied to the
   // logged-in person so we can target reminders (e.g. the checklist assignee).
   await pool.query(`
@@ -2003,11 +2007,26 @@ async function removePushSubscription(who, body) {
   return { ok: true };
 }
 
-// How many devices are subscribed (for the manager UI) + whether push is ready.
+// The master on/off switch (manager-controlled). Off = nothing is sent and
+// employees don't see the per-device "enable" prompt.
+async function notifyIsEnabled() {
+  const { rows } = await pool.query('SELECT enabled FROM push_keys WHERE id = 1');
+  return !!(rows.length && rows[0].enabled);
+}
+
+// How many devices are subscribed (for the manager UI), whether push is ready,
+// and whether the feature is currently switched on.
 async function getPushStatus(who) {
   if (!who) return { error: 'Not authorized' };
   const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM push_subscriptions');
-  return { configured: vapidReady, devices: rows[0].n };
+  return { configured: vapidReady, devices: rows[0].n, enabled: await notifyIsEnabled() };
+}
+
+// Manager flips the whole feature on/off.
+async function setNotifyEnabled(who, on) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  await pool.query('UPDATE push_keys SET enabled = $1 WHERE id = 1', [!!on]);
+  return { ok: true, enabled: !!on };
 }
 
 // Send a payload to a set of subscription rows; prune dead ones (404/410 = gone).
@@ -2034,6 +2053,7 @@ async function pushToSubs(rows, payload) {
 async function sendTestPush(who) {
   if (!isManager(who)) return { error: 'Manager only' };
   if (!vapidReady) return { error: 'Push notifications are not set up on the server yet.' };
+  if (!(await notifyIsEnabled())) return { error: 'Turn notifications on first.' };
   const { rows } = await pool.query('SELECT endpoint, p256dh, auth FROM push_subscriptions');
   if (!rows.length) return { error: 'No devices have enabled notifications yet. Tap “Enable notifications” on a scanner first.' };
   const res = await pushToSubs(rows, {
@@ -2133,6 +2153,7 @@ app.post('/', async (req, res) => {
         case 'savePushSubscription':   out = await savePushSubscription(who, body); break;
         case 'removePushSubscription': out = await removePushSubscription(who, body); break;
         case 'getPushStatus':          out = await getPushStatus(who); break;
+        case 'setNotifyEnabled':       out = await setNotifyEnabled(who, body.enabled); break;
         case 'sendTestPush':           out = await sendTestPush(who); break;
         default:                  out = { error: 'Unknown action: ' + action };
       }

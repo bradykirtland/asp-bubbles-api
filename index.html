@@ -946,19 +946,35 @@
       </a>
     </div>
 
-    <!-- Per-device push opt-in -->
+    <!-- Notifications card: per-device opt-in prompt + manager on/off control -->
     <div class="home-notify" id="notifyCard" hidden>
-      <div class="notify-main">
-        <span class="notify-ico">🔔</span>
-        <div>
-          <div class="notify-title">Reminders on this device</div>
-          <div class="notify-sub" id="notifySub">Get closing-checklist and shift reminders as pop-up notifications on this device.</div>
+      <!-- Per-device enable prompt — shown only when the feature is ON and this
+           device hasn't enabled yet; disappears once enabled. -->
+      <div id="notifyDeviceSec" hidden>
+        <div class="notify-main">
+          <span class="notify-ico">🔔</span>
+          <div>
+            <div class="notify-title">Reminders on this device</div>
+            <div class="notify-sub" id="notifySub">Get closing-checklist and shift reminders as pop-up notifications on this device.</div>
+          </div>
+        </div>
+        <div class="notify-btns">
+          <button class="primary" id="notifyEnable">Enable notifications</button>
         </div>
       </div>
-      <div class="notify-btns">
-        <button class="primary" id="notifyEnable">Enable notifications</button>
-        <button class="ghost" id="notifyDisable" hidden>Turn off</button>
-        <button class="ghost" id="notifyTest" hidden>Send test</button>
+      <!-- Manager-only master control -->
+      <div id="notifyMgrSec" hidden>
+        <div class="notify-main">
+          <span class="notify-ico">🔔</span>
+          <div>
+            <div class="notify-title">Push notifications</div>
+            <div class="notify-sub" id="notifyMgrSub">Off — turned off for now.</div>
+          </div>
+        </div>
+        <div class="notify-btns">
+          <button class="primary" id="notifyToggle">Turn on</button>
+          <button class="ghost" id="notifyTest" hidden>Send test</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2158,22 +2174,34 @@ async function currentPushSub() {
 
 async function updateNotifyUI() {
   const card = $("notifyCard"); if (!card) return;
-  card.hidden = false;
-  const enableBtn = $("notifyEnable"), offBtn = $("notifyDisable"), testBtn = $("notifyTest"), sub = $("notifySub");
+  const devSec = $("notifyDeviceSec"), mgrSec = $("notifyMgrSec");
   const isMgr = !!(session && session.role === "manager");
-  if (!PUSH.supported) {
-    sub.textContent = "This device's browser can't show notifications.";
-    enableBtn.hidden = true; offBtn.hidden = true;
-    testBtn.hidden = !isMgr;   // a manager can still test other devices
-    return;
+
+  // Master switch + readiness from the server.
+  let enabled = false;
+  try {
+    const st = await apiCall("getPushStatus", { pin: session.pin });
+    if (st && !st.error) enabled = !!st.enabled;
+  } catch (_) {}
+
+  const subscribed = PUSH.supported && Notification.permission === "granted" && !!(await currentPushSub());
+
+  // Per-device prompt: only when the feature is ON, the device can do push, and
+  // it hasn't been enabled here yet. Disappears once enabled (no nagging).
+  const showDevice = enabled && PUSH.supported && !subscribed;
+  devSec.hidden = !showDevice;
+
+  // Manager master control is always available to managers.
+  mgrSec.hidden = !isMgr;
+  if (isMgr) {
+    $("notifyToggle").textContent = enabled ? "Turn off" : "Turn on";
+    $("notifyMgrSub").textContent = enabled
+      ? "On — devices can enable reminders and scheduled pushes will send."
+      : "Off — turned off for now. Turn on to let devices get reminders.";
+    $("notifyTest").hidden = !enabled;
   }
-  const on = !!(await currentPushSub()) && Notification.permission === "granted";
-  enableBtn.hidden = on;
-  offBtn.hidden = !on;
-  testBtn.hidden = !isMgr;
-  sub.textContent = on
-    ? "✓ On for this device. You'll get closing-checklist and shift reminders here."
-    : "Get closing-checklist and shift reminders as pop-up notifications on this device.";
+
+  card.hidden = devSec.hidden && mgrSec.hidden;
 }
 
 async function enablePush() {
@@ -2193,11 +2221,11 @@ async function enablePush() {
   } catch (e) { alert("Couldn't enable notifications: " + (e && e.message ? e.message : e)); }
 }
 
-async function disablePush() {
-  try {
-    const sub = await currentPushSub();
-    if (sub) { await apiCall("removePushSubscription", { pin: session.pin, endpoint: sub.endpoint }); await sub.unsubscribe(); }
-  } catch (_) {}
+// Manager flips the whole feature on/off.
+async function toggleNotify() {
+  const turnOn = $("notifyToggle").textContent !== "Turn off";
+  const res = await apiCall("setNotifyEnabled", { pin: session.pin, enabled: turnOn });
+  if (res && res.error) { alert(res.error); return; }
   await updateNotifyUI();
 }
 
@@ -4271,7 +4299,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) chec
 
 $("refreshBtn").addEventListener("click", refreshCurrent);
 $("notifyEnable").addEventListener("click", enablePush);
-$("notifyDisable").addEventListener("click", disablePush);
+$("notifyToggle").addEventListener("click", toggleNotify);
 $("notifyTest").addEventListener("click", sendTestPushNow);
 
 $("aClose").addEventListener("click", () => { $("award").hidden = true; });
