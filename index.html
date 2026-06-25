@@ -2444,6 +2444,9 @@ function lpRenderActivity() {
     else if (n >= 80) banner = '<div class="lp-warnbanner">⚠ ' + n + '/100 cloud prints on ' + lpDayLabel(recentDay) + ' — approaching the free daily limit.</div>';
   }
 
+  // Days start COLLAPSED on first view; only auto-open when a search/filter is
+  // active, so results aren't hidden behind a closed dropdown.
+  const anyFilter = !!(q || lp.actName || lp.actDate);
   const dayOrder = [], byDay = {};
   jobs.forEach(j => { const d = j.day || "—"; if (!byDay[d]) { byDay[d] = []; dayOrder.push(d); } byDay[d].push(j); });
 
@@ -2462,7 +2465,7 @@ function lpRenderActivity() {
       }
       return lpActRow(grp[0]);
     }).join("");
-    return '<details class="lp-day"' + (di === 0 ? " open" : "") + '><summary>' + lpDayLabel(d) +
+    return '<details class="lp-day"' + (anyFilter ? " open" : "") + '><summary>' + lpDayLabel(d) +
       ' · <span class="' + cls + '">' + tot.calls + '/100 calls</span> · ' + tot.labels + ' labels</summary>' +
       '<div class="lp-day-body">' + body + '</div></details>';
   }).join("");
