@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '49';
+const APP_VERSION = '50';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -1636,6 +1636,18 @@ function importantDesc(s) {
   return cut.replace(/[\s,]+$/, '');
 }
 
+// Estimate a Code 128 barcode's width in modules so we can center it. All-digit
+// codes use subset C (2 digits per symbol → much narrower), everything else
+// subset B (1 char per symbol). Formula: (dataSymbols + start + checksum) * 11
+// + 13 (stop). Used to compute the centered x-origin.
+function est128Modules(code) {
+  const c = String(code || '');
+  const len = Math.max(c.length, 1);
+  const allDigits = /^\d+$/.test(c) && len >= 2;
+  const dataSymbols = allDigits ? (Math.floor(len / 2) + (len % 2)) : len;
+  return (dataSymbols + 2) * 11 + 13;
+}
+
 function buildLabelZpl(code, qty, desc) {
   const clean = (s, n) => String(s == null ? '' : s).replace(/[\r\n\t]/g, '').replace(/[\^~\\]/g, '').trim().slice(0, n);
   const c = clean(code, 40);
@@ -1648,7 +1660,7 @@ function buildLabelZpl(code, qty, desc) {
   // dropping to 1 only for very long codes that wouldn't otherwise fit. Centered
   // by computing the x-origin (the ^FB,C trick does NOT center a ^BC barcode),
   // and shifted toward the bottom.
-  const estModules = 11 * (len + 2) + 13;            // ~Code128 width in modules
+  const estModules = est128Modules(c);               // ~Code128 width in modules
   const modW = (estModules * 2 <= 396) ? 2 : 1;
   const bcW = estModules * modW;
   const bcX = Math.max(4, Math.round((406 - bcW) / 2));

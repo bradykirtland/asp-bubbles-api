@@ -2468,9 +2468,10 @@ function lpImportantDesc(s) {
 // Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots). Mirrors the server's
 // buildLabelZpl: short description line, big condensable number, then a uniform
 // (fixed module width) centered Code 128 shifted toward the bottom.
+function lpEstModules(code) { const c = String(code || ""); const len = Math.max(c.length, 1); const allDigits = /^\d+$/.test(c) && len >= 2; const ds = allDigits ? (Math.floor(len / 2) + (len % 2)) : len; return (ds + 2) * 11 + 13; }
 function lpNumW(code) { const len = Math.max(String(code || "").length, 1); return Math.max(18, Math.min(48, Math.floor(390 / len))); }
-function lpModW(code) { const len = Math.max(String(code || "").length, 1); const m = 11 * (len + 2) + 13; return (m * 2 <= 396) ? 2 : 1; }
-function lpBcX(code) { const len = Math.max(String(code || "").length, 1); const m = 11 * (len + 2) + 13; return Math.max(4, Math.round((406 - m * lpModW(code)) / 2)); }
+function lpModW(code) { return (lpEstModules(code) * 2 <= 396) ? 2 : 1; }
+function lpBcX(code) { return Math.max(4, Math.round((406 - lpEstModules(code) * lpModW(code)) / 2)); }
 
 function lpBuildZpl(code, qty) {
   return [
