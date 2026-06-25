@@ -1440,12 +1440,14 @@
         <div class="ftitle" style="margin-bottom:4px;">Printers</div>
         <p class="muted" style="font-size:12px; margin:0 0 8px;">Each Zebra printer is enrolled in the same Zebra Cloud account; add it here by name + serial. Workers pick which printer to print to on the Label Printer screen.</p>
         <div id="lblPrinterList" class="alist"></div>
-        <div class="row2" style="margin-top:8px;">
+        <div class="ftitle" id="lblPrFormTitle" style="font-size:13px; margin:10px 0 4px;">Add a printer</div>
+        <div class="row2">
           <div class="field"><label>Printer name</label><input type="text" id="lblPrName" placeholder="e.g. Front desk"></div>
           <div class="field"><label>Serial number</label><input type="text" id="lblPrSerial" placeholder="e.g. XXZUJ231600583"></div>
         </div>
-        <div class="formbtns" style="justify-content:flex-start;">
+        <div class="formbtns" style="justify-content:flex-start; gap:10px;">
           <button class="primary" id="lblPrAdd">Add printer</button>
+          <button class="ghost" id="lblPrCancel" hidden>Cancel</button>
         </div>
         <details style="margin-top:12px;">
           <summary class="muted" style="font-size:12px; cursor:pointer; font-weight:600;">How to add a new Zebra printer (step by step)</summary>
@@ -2388,23 +2390,51 @@ async function saveLabelLimit() {
   await renderLabelAdmin();
 }
 
+let lpEditPrinterId = null;
 async function renderPrinterAdmin() {
   const el = $("lblPrinterList");
   if (!el) return;
   let list = [];
   try { const r = await apiCall("getPrinters", { pin: session.pin }); list = (r && r.printers) || []; } catch (_) {}
   el.innerHTML = list.length
-    ? list.map(p => `<div class="arow"><div class="ainfo"><div class="atitle">${escapeHtml(p.name)}</div><div class="asub">Serial: ${escapeHtml(p.serial || "—")}</div></div><div class="aactions"><button class="ghost" data-rmprinter="${p.id}">Remove</button></div></div>`).join("")
+    ? list.map(p => `<div class="arow"><div class="ainfo"><div class="atitle">${escapeHtml(p.name)}</div><div class="asub">Serial: ${escapeHtml(p.serial || "—")}</div></div><div class="aactions"><button class="ghost" data-edprinter="${p.id}" data-edname="${escapeAttr(p.name)}" data-edserial="${escapeAttr(p.serial || "")}">Edit</button><button class="ghost" data-rmprinter="${p.id}">Remove</button></div></div>`).join("")
     : `<div class="muted" style="font-size:13px;">No printers yet — add one below.</div>`;
+  el.querySelectorAll("[data-edprinter]").forEach(b => b.addEventListener("click", () => editPrinter(parseInt(b.dataset.edprinter, 10), b.dataset.edname, b.dataset.edserial)));
   el.querySelectorAll("[data-rmprinter]").forEach(b => b.addEventListener("click", () => lpRemovePrinter(parseInt(b.dataset.rmprinter, 10))));
 }
-async function lpAddPrinter() {
-  const res = await apiCall("addPrinter", { pin: session.pin, printer: { name: $("lblPrName").value, serial: $("lblPrSerial").value } });
-  if (res && res.error) { adminError(res.error); return; }
+function editPrinter(id, name, serial) {
+  lpEditPrinterId = id;
+  $("lblPrName").value = name || "";
+  $("lblPrSerial").value = serial || "";
+  $("lblPrFormTitle").textContent = "Edit printer";
+  $("lblPrAdd").textContent = "Save changes";
+  $("lblPrCancel").hidden = false;
+  adminError("");
+  try { $("lblPrName").scrollIntoView({ behavior: "smooth", block: "center" }); } catch (_) {}
+}
+function cancelEditPrinter() {
+  lpEditPrinterId = null;
   $("lblPrName").value = ""; $("lblPrSerial").value = "";
+  $("lblPrFormTitle").textContent = "Add a printer";
+  $("lblPrAdd").textContent = "Add printer";
+  $("lblPrCancel").hidden = true;
+  adminError("");
+}
+async function lpSavePrinter() {
+  const printer = { name: $("lblPrName").value, serial: $("lblPrSerial").value };
+  let res;
+  if (lpEditPrinterId != null) {
+    printer.id = lpEditPrinterId;
+    res = await apiCall("updatePrinter", { pin: session.pin, printer: printer });
+  } else {
+    res = await apiCall("addPrinter", { pin: session.pin, printer: printer });
+  }
+  if (res && res.error) { adminError(res.error); return; }
+  cancelEditPrinter();
   await renderPrinterAdmin();
 }
 async function lpRemovePrinter(id) {
+  if (lpEditPrinterId === id) cancelEditPrinter();
   const res = await apiCall("removePrinter", { pin: session.pin, id: id });
   if (res && res.error) { adminError(res.error); return; }
   await renderPrinterAdmin();
@@ -4562,7 +4592,8 @@ $("mNotifyToggle").addEventListener("click", toggleNotifyAdmin);
 $("mNotifyTest").addEventListener("click", async () => { await sendTestPushNow(); renderNotifyAdmin(); });
 $("mNotifyEnableDevice").addEventListener("click", async () => { await enablePush(); renderNotifyAdmin(); });
 $("lblLimitSave").addEventListener("click", saveLabelLimit);
-$("lblPrAdd").addEventListener("click", lpAddPrinter);
+$("lblPrAdd").addEventListener("click", lpSavePrinter);
+$("lblPrCancel").addEventListener("click", cancelEditPrinter);
 $("lblCsvBtn").addEventListener("click", () => $("lblCsvFile").click());
 $("lblCsvFile").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; uploadPartCsv(f); e.target.value = ""; });
 $("lblSrcSave").addEventListener("click", saveLabelSrcUrl);
