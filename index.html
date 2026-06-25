@@ -2109,6 +2109,27 @@ function showScreen(name) {
   if (name === "label") initLabelPrinter();
 }
 
+// The toolbar Refresh button reloads whatever screen you're actually looking at.
+// fetchData only covers Bubbles + the home tile badges; every other screen loads
+// its own data, so Refresh has to call that screen's loader too (otherwise it
+// looked like Refresh "did nothing" until you navigated out and back in).
+async function refreshCurrent() {
+  const btn = $("refreshBtn");
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Refreshing…";
+  try {
+    const jobs = [fetchData()];   // balances, activity, home tile "your turn" badge
+    if (state.screen === "checklist") jobs.push(loadChecklist());
+    else if (state.screen === "boxcounter") jobs.push(loadBoxSizes());
+    else if (state.screen === "eom") jobs.push(state.eomTab === "log" ? loadEomLog() : loadEom());
+    else if (state.screen === "label") { jobs.push(lpLoadActivity(), lpLoadUsage()); }
+    await Promise.all(jobs);
+  } catch (_) { /* loaders surface their own errors */ }
+  btn.textContent = orig;
+  btn.disabled = false;
+}
+
 /* ---------- Label Printer (scan a part → reprint Code 128 labels on the Zebra ZQ620) ----------
    Devices need NOTHING installed. The Print button queues the job on our server
    (action "enqueuePrint"); a small "print bridge" on the warehouse PC polls the
@@ -4147,7 +4168,7 @@ checkVersion();                                                  // on load (wor
 setInterval(checkVersion, 5 * 60 * 1000);                        // every 5 min while open
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkVersion(); });  // when reopened/refocused
 
-$("refreshBtn").addEventListener("click", fetchData);
+$("refreshBtn").addEventListener("click", refreshCurrent);
 
 $("aClose").addEventListener("click", () => { $("award").hidden = true; });
 
