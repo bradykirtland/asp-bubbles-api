@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '41';
+const APP_VERSION = '42';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -269,6 +269,10 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ
     )`);
   await pool.query(`INSERT INTO cloud_print (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+  // Optional manager-set cap on cloud calls per day (NULL = no app cap; Zebra's
+  // own free tier is 100/day). Stops printing once the cap is hit so a runaway
+  // day can't rack up overage charges.
+  await pool.query(`ALTER TABLE cloud_print ADD COLUMN IF NOT EXISTS daily_limit INTEGER`);
 
   // ----- Push notifications (Web Push / VAPID) -----
   // The server's VAPID keypair is generated here on first boot and stored in the
@@ -1518,6 +1522,16 @@ async function enqueuePrint(who, body) {
     .replace(/[\r\n\t]/g, '').replace(/[\^~\\]/g, '').trim().slice(0, 40);
   if (!code) return { error: 'Nothing to print — scan or type a barcode first.' };
   const qty = Math.max(1, Math.min(999, parseInt(body && body.qty, 10) || 1));
+
+  // Enforce the manager's daily cloud-call cap (only relevant when cloud is the
+  // active path). Check before inserting so a blocked attempt doesn't count.
+  const cfg = await getCloudConfig();
+  if (cloudConfigured(cfg) && cfg.daily_limit != null && cfg.daily_limit > 0) {
+    if ((await printCallsToday()) >= cfg.daily_limit) {
+      return { ok: false, error: 'Daily print limit reached (' + cfg.daily_limit + ' for today). A manager can raise it in Manage → Label Printer.' };
+    }
+  }
+
   // TODO: when the parts list (Excel/SQL) is imported, look up the real description
   // for `code` here instead of the placeholder.
   const description = 'PLACEHOLDER';
@@ -1529,7 +1543,6 @@ async function enqueuePrint(who, body) {
   const jobId = rows[0].id;
 
   // Preferred path: Zebra cloud (no PC). Falls back to the warehouse-PC bridge if cloud isn't set up.
-  const cfg = await getCloudConfig();
   if (cloudConfigured(cfg)) {
     const res = await sendViaCloud(cfg, zpl);
     if (res.ok) {
@@ -1563,7 +1576,8 @@ async function getPrintUsage(who) {
     "SELECT (created_at AT TIME ZONE $1)::date::text AS day, COUNT(*)::int AS n FROM print_jobs WHERE created_at >= now() - interval '14 days' GROUP BY 1 ORDER BY 1 DESC", [tz]);
   const byUser = await pool.query(
     "SELECT COALESCE(requested_by,'(unknown)') AS name, COUNT(*)::int AS n FROM print_jobs WHERE (created_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date GROUP BY 1 ORDER BY 2 DESC", [tz]);
-  return { today: today.rows[0].n, limit: 100, days: days.rows, byUser: byUser.rows };
+  const cfg = await getCloudConfig();
+  return { today: today.rows[0].n, limit: 100, dailyLimit: cfg.daily_limit != null ? cfg.daily_limit : null, days: days.rows, byUser: byUser.rows };
 }
 
 // Manager view: recent print activity — who printed what, when, and the result.
@@ -1593,8 +1607,14 @@ async function bridgeOk(body) {
 
 // ----- Cloud printing (Zebra SendFileToPrinter) -----
 async function getCloudConfig() {
-  const { rows } = await pool.query('SELECT api_key, tenant_id, serial, enabled FROM cloud_print WHERE id = 1');
+  const { rows } = await pool.query('SELECT api_key, tenant_id, serial, enabled, daily_limit FROM cloud_print WHERE id = 1');
   return rows[0] || {};
+}
+// Cloud calls used so far today (US Pacific) — one print_jobs row per call.
+async function printCallsToday() {
+  const { rows } = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM print_jobs WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = (now() AT TIME ZONE 'America/Los_Angeles')::date");
+  return rows[0].n;
 }
 function cloudConfigured(cfg) {
   return !!(cfg && cfg.enabled && cfg.api_key && cfg.tenant_id && cfg.serial);
@@ -1623,7 +1643,16 @@ async function sendViaCloud(cfg, zpl) {
 async function getCloudSettings(who) {
   if (!isManager(who)) return { error: 'Manager only' };
   const cfg = await getCloudConfig();
-  return { enabled: !!cfg.enabled, hasApiKey: !!cfg.api_key, tenant: cfg.tenant_id || '', serial: cfg.serial || '' };
+  return { enabled: !!cfg.enabled, hasApiKey: !!cfg.api_key, tenant: cfg.tenant_id || '', serial: cfg.serial || '', dailyLimit: cfg.daily_limit != null ? cfg.daily_limit : null };
+}
+
+// Manager sets/clears the daily cloud-call cap. Blank/0/negative = no cap.
+async function setPrintDailyLimit(who, limit) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  let val = cleanInt(limit);
+  if (val == null || val <= 0) val = null;
+  await pool.query('UPDATE cloud_print SET daily_limit = $1 WHERE id = 1', [val]);
+  return { ok: true, dailyLimit: val };
 }
 async function setCloudSettings(who, body) {
   if (!isManager(who)) return { error: 'Manager only' };
@@ -2149,6 +2178,7 @@ app.post('/', async (req, res) => {
         case 'setCloudSettings': out = await setCloudSettings(who, body); break;
         case 'getPrintUsage':    out = await getPrintUsage(who); break;
         case 'getPrintLog':      out = await getPrintLog(who); break;
+        case 'setPrintDailyLimit': out = await setPrintDailyLimit(who, body.limit); break;
         // ----- Push notifications -----
         case 'savePushSubscription':   out = await savePushSubscription(who, body); break;
         case 'removePushSubscription': out = await removePushSubscription(who, body); break;

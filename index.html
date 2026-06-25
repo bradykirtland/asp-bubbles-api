@@ -947,35 +947,17 @@
       </a>
     </div>
 
-    <!-- Notifications card: per-device opt-in prompt + manager on/off control -->
+    <!-- Per-device opt-in prompt (employees). Manager controls live in Manage → Notifications. -->
     <div class="home-notify" id="notifyCard" hidden>
-      <!-- Per-device enable prompt — shown only when the feature is ON and this
-           device hasn't enabled yet; disappears once enabled. -->
-      <div id="notifyDeviceSec" hidden>
-        <div class="notify-main">
-          <span class="notify-ico">🔔</span>
-          <div>
-            <div class="notify-title">Reminders on this device</div>
-            <div class="notify-sub" id="notifySub">Get closing-checklist and shift reminders as pop-up notifications on this device.</div>
-          </div>
-        </div>
-        <div class="notify-btns">
-          <button class="primary" id="notifyEnable">Enable notifications</button>
+      <div class="notify-main">
+        <span class="notify-ico">🔔</span>
+        <div>
+          <div class="notify-title">Reminders on this device</div>
+          <div class="notify-sub" id="notifySub">Get closing-checklist and shift reminders as pop-up notifications on this device.</div>
         </div>
       </div>
-      <!-- Manager-only master control -->
-      <div id="notifyMgrSec" hidden>
-        <div class="notify-main">
-          <span class="notify-ico">🔔</span>
-          <div>
-            <div class="notify-title">Push notifications</div>
-            <div class="notify-sub" id="notifyMgrSub">Off — turned off for now.</div>
-          </div>
-        </div>
-        <div class="notify-btns">
-          <button class="primary" id="notifyToggle">Turn on</button>
-          <button class="ghost" id="notifyTest" hidden>Send test</button>
-        </div>
+      <div class="notify-btns">
+        <button class="primary" id="notifyEnable">Enable notifications</button>
       </div>
     </div>
   </div>
@@ -1331,6 +1313,8 @@
         <button class="atab" data-atab="people">People</button>
         <button class="atab" data-atab="admins">Admins</button>
         <button class="atab" data-atab="checklist">Checklist</button>
+        <button class="atab" data-atab="label">Label Printer</button>
+        <button class="atab" data-atab="notify">Notifications</button>
       </div>
       <div id="adminError" style="display:none; background:var(--danger-soft); border:1px solid #fecaca; color:#7f1d1d; border-radius:8px; padding:8px 12px; font-size:13px; margin-bottom:12px;"></div>
 
@@ -1431,6 +1415,28 @@
         </div>
         <p class="muted" style="font-size:12px; margin:0 0 10px;">Changes apply to tomorrow's checklist onward — today's is already set.</p>
         <div class="alist" id="clTaskList"></div>
+      </div>
+
+      <!-- Label Printer: daily cloud-call cap -->
+      <div class="asec" id="asec-label" hidden>
+        <p class="muted" style="font-size:12px; margin:0 0 12px;">Each different part number sent to the printer = <strong>1 cloud call</strong> (the quantity/copies are free). Zebra's free tier is <strong>100 calls/day</strong>; beyond that they bill ~$0.01 each. Set a daily cap to stop printing once a number of calls is reached.</p>
+        <div class="field"><label>Daily cloud-call limit (leave blank for no cap)</label><input type="number" id="lblLimit" min="0" step="1" placeholder="e.g. 100"></div>
+        <div class="formbtns" style="justify-content:flex-start;">
+          <button class="primary" id="lblLimitSave">Save limit</button>
+        </div>
+        <div id="lblUsage" class="muted" style="font-size:13px; margin-top:14px;"></div>
+      </div>
+
+      <!-- Notifications: manager master control -->
+      <div class="asec" id="asec-notify" hidden>
+        <div class="ftitle" style="margin-bottom:4px;">Push notifications</div>
+        <div class="notify-sub" id="mNotifySub" style="margin-bottom:14px;">Off — turned off for now.</div>
+        <div class="notify-btns" style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="primary" id="mNotifyToggle">Turn on</button>
+          <button class="ghost" id="mNotifyTest" hidden>Send test</button>
+          <button class="ghost" id="mNotifyEnableDevice" hidden>Enable on this device</button>
+        </div>
+        <div id="mNotifyDevices" class="muted" style="font-size:13px; margin-top:14px;"></div>
       </div>
     </div>
   </div>
@@ -2173,36 +2179,19 @@ async function currentPushSub() {
   catch (_) { return null; }
 }
 
+// Home screen: the per-device opt-in prompt — EMPLOYEES only (managers do all
+// notification setup in Manage → Notifications). Only when the feature is on,
+// the device supports push, and it hasn't enabled yet (disappears once enabled).
 async function updateNotifyUI() {
   const card = $("notifyCard"); if (!card) return;
-  const devSec = $("notifyDeviceSec"), mgrSec = $("notifyMgrSec");
   const isMgr = !!(session && session.role === "manager");
-
-  // Master switch + readiness from the server.
   let enabled = false;
   try {
     const st = await apiCall("getPushStatus", { pin: session.pin });
     if (st && !st.error) enabled = !!st.enabled;
   } catch (_) {}
-
   const subscribed = PUSH.supported && Notification.permission === "granted" && !!(await currentPushSub());
-
-  // Per-device prompt: only when the feature is ON, the device can do push, and
-  // it hasn't been enabled here yet. Disappears once enabled (no nagging).
-  const showDevice = enabled && PUSH.supported && !subscribed;
-  devSec.hidden = !showDevice;
-
-  // Manager master control is always available to managers.
-  mgrSec.hidden = !isMgr;
-  if (isMgr) {
-    $("notifyToggle").textContent = enabled ? "Turn off" : "Turn on";
-    $("notifyMgrSub").textContent = enabled
-      ? "On — devices can enable reminders and scheduled pushes will send."
-      : "Off — turned off for now. Turn on to let devices get reminders.";
-    $("notifyTest").hidden = !enabled;
-  }
-
-  card.hidden = devSec.hidden && mgrSec.hidden;
+  card.hidden = !(enabled && PUSH.supported && !subscribed && !isMgr);
 }
 
 async function enablePush() {
@@ -2222,18 +2211,52 @@ async function enablePush() {
   } catch (e) { alert("Couldn't enable notifications: " + (e && e.message ? e.message : e)); }
 }
 
-// Manager flips the whole feature on/off.
-async function toggleNotify() {
-  const turnOn = $("notifyToggle").textContent !== "Turn off";
+// ----- Manage → Notifications (manager master control) -----
+async function renderNotifyAdmin() {
+  let enabled = false, devices = 0, configured = false;
+  try {
+    const st = await apiCall("getPushStatus", { pin: session.pin });
+    if (st && !st.error) { enabled = !!st.enabled; devices = st.devices || 0; configured = !!st.configured; }
+  } catch (_) {}
+  const subscribed = PUSH.supported && Notification.permission === "granted" && !!(await currentPushSub());
+  $("mNotifyToggle").textContent = enabled ? "Turn off" : "Turn on";
+  $("mNotifySub").textContent = enabled
+    ? "On — devices can enable reminders and scheduled pushes will send."
+    : "Off — turned off for now. Turn on to let devices get reminders.";
+  $("mNotifyTest").hidden = !enabled;
+  $("mNotifyEnableDevice").hidden = !(enabled && PUSH.supported && !subscribed);
+  $("mNotifyDevices").textContent = !configured ? "Push isn't set up on the server yet."
+    : (devices + " device" + (devices === 1 ? "" : "s") + " enabled.");
+}
+
+async function toggleNotifyAdmin() {
+  const turnOn = $("mNotifyToggle").textContent !== "Turn off";
   const res = await apiCall("setNotifyEnabled", { pin: session.pin, enabled: turnOn });
   if (res && res.error) { alert(res.error); return; }
-  await updateNotifyUI();
+  await renderNotifyAdmin();
 }
 
 async function sendTestPushNow() {
   const res = await apiCall("sendTestPush", { pin: session.pin });
   if (res && res.error) { alert(res.error); return; }
   alert("Sent to " + (res.sent || 0) + " device(s)" + (res.failed ? (", " + res.failed + " failed") : "") + ". Check the scanner's notification shade.");
+}
+
+// ----- Manage → Label Printer (daily cloud-call cap) -----
+async function renderLabelAdmin() {
+  let usage = null;
+  try { usage = await apiCall("getPrintUsage", { pin: session.pin }); } catch (_) {}
+  if (!usage || usage.error) { $("lblUsage").textContent = ""; $("lblLimit").value = ""; return; }
+  $("lblLimit").value = (usage.dailyLimit != null) ? usage.dailyLimit : "";
+  const cap = (usage.dailyLimit != null) ? usage.dailyLimit : null;
+  $("lblUsage").textContent = "Used today: " + usage.today + (cap != null ? (" of " + cap + " (your cap)") : " — no cap set (Zebra free tier is 100/day).");
+}
+
+async function saveLabelLimit() {
+  const raw = $("lblLimit").value.trim();
+  const res = await apiCall("setPrintDailyLimit", { pin: session.pin, limit: raw === "" ? 0 : raw });
+  if (res && res.error) { adminError(res.error); return; }
+  await renderLabelAdmin();
 }
 
 // The toolbar Refresh button reloads whatever screen you're actually looking at.
@@ -3952,10 +3975,12 @@ async function loadAdmin() {
 
 function switchAdminTab(tab) {
   state.admin.tab = tab;
-  ["rules", "rewards", "people", "admins", "checklist"].forEach(t => { $("asec-" + t).hidden = (t !== tab); });
+  ["rules", "rewards", "people", "admins", "checklist", "label", "notify"].forEach(t => { $("asec-" + t).hidden = (t !== tab); });
   document.querySelectorAll(".atab").forEach(b => b.classList.toggle("active", b.dataset.atab === tab));
   adminError("");
   hideAdminForms();
+  if (tab === "label") renderLabelAdmin();
+  if (tab === "notify") renderNotifyAdmin();
 }
 
 // Shared save path: posts the action, then refreshes both the admin lists and
@@ -4300,8 +4325,10 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) chec
 
 $("refreshBtn").addEventListener("click", refreshCurrent);
 $("notifyEnable").addEventListener("click", enablePush);
-$("notifyToggle").addEventListener("click", toggleNotify);
-$("notifyTest").addEventListener("click", sendTestPushNow);
+$("mNotifyToggle").addEventListener("click", toggleNotifyAdmin);
+$("mNotifyTest").addEventListener("click", async () => { await sendTestPushNow(); renderNotifyAdmin(); });
+$("mNotifyEnableDevice").addEventListener("click", async () => { await enablePush(); renderNotifyAdmin(); });
+$("lblLimitSave").addEventListener("click", saveLabelLimit);
 
 $("aClose").addEventListener("click", () => { $("award").hidden = true; });
 
