@@ -2450,17 +2450,27 @@ function lpLookupDesc(code) {
     try { const r = await apiCall("lookupPart", { pin: session.pin, code: c }); desc = (r && r.description) || ""; } catch (_) {}
     if (lpCleanCode($("lpCode").value) !== c) return;   // code changed while waiting
     lp.desc = desc;
-    $("lpDesc").textContent = desc || "(no description on file)";
+    $("lpDesc").textContent = desc ? lpImportantDesc(desc) : "(no description on file)";
     lpUpdatePrintLabel();
   }, 250);
 }
 
-// Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots): big part number on top,
-// centered Code 128 below. ^PQ prints `qty` copies on one button press.
-// Big number keeps a standard height (46); only its character width condenses for long
-// codes. Barcode module width also scales. So a label always fits the 2" width.
-function lpNumW(code) { const len = Math.max(String(code || "").length, 1); return Math.max(16, Math.min(46, Math.floor(390 / len))); }
-function lpModW(code) { const len = Math.max(String(code || "").length, 1); const m = 11 * (len + 2) + 13; return (m * 3 <= 376) ? 3 : (m * 2 <= 376 ? 2 : 1); }
+// Mirror of the server's importantDesc: keep the leading part that prints.
+function lpImportantDesc(s) {
+  s = String(s == null ? "" : s).replace(/[\^~\\]/g, "").trim();
+  if (s.length <= 32) return s;
+  let cut = s.slice(0, 32);
+  const sp = cut.lastIndexOf(" ");
+  if (sp > 14) cut = cut.slice(0, sp);
+  return cut.replace(/[\s,]+$/, "");
+}
+
+// Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots). Mirrors the server's
+// buildLabelZpl: short description line, big condensable number, then a uniform
+// (fixed module width) centered Code 128 shifted toward the bottom.
+function lpNumW(code) { const len = Math.max(String(code || "").length, 1); return Math.max(18, Math.min(48, Math.floor(390 / len))); }
+function lpModW(code) { const len = Math.max(String(code || "").length, 1); const m = 11 * (len + 2) + 13; return (m * 2 <= 396) ? 2 : 1; }
+function lpBcX(code) { const len = Math.max(String(code || "").length, 1); const m = 11 * (len + 2) + 13; return Math.max(4, Math.round((406 - m * lpModW(code)) / 2)); }
 
 function lpBuildZpl(code, qty) {
   return [
@@ -2468,10 +2478,10 @@ function lpBuildZpl(code, qty) {
     "^CI28",
     "^PW406",
     "^LL0203",
-    "^FO8,22^A0N,24,24^FB390,1,0,C,0^FD" + String(lp.desc || "").replace(/[\^~\\]/g, "").slice(0, 38) + "^FS",
-    "^FO0,54^A0N,46," + lpNumW(code) + "^FB406,1,0,C,0^FD" + code + "^FS",
+    "^FO8,18^A0N,22,22^FB390,1,0,C,0^FD" + lpImportantDesc(lp.desc || "") + "^FS",
+    "^FO0,48^A0N,48," + lpNumW(code) + "^FB406,1,0,C,0^FD" + code + "^FS",
     "^BY" + lpModW(code) + ",2.5",
-    "^FO0,108^FB406,1,0,C^BCN,60,N,N,N^FD" + code + "^FS",
+    "^FO" + lpBcX(code) + ",118^BCN,64,N,N,N^FD" + code + "^FS",
     "^PQ" + qty + ",0,0,N",
     "^XZ"
   ].join("\n");

@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '48';
+const APP_VERSION = '49';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -1624,23 +1624,40 @@ const BRIDGE_ONLINE_MS = 45000;   // bridge counts as "online" if seen in this w
 // Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots): description line on
 // top, big part number, then a centered Code 128. Layout dialed in on the real
 // ZQ620 (v22). ^PQ prints `qty` copies. Mirrors the client preview.
+// Keep only the important leading part of a description so it fits one clean
+// line above the number (drops trailing brand/size detail). Cuts on a word
+// boundary near 32 chars; no ellipsis.
+function importantDesc(s) {
+  s = String(s == null ? '' : s).replace(/[\r\n\t]/g, '').replace(/[\^~\\]/g, '').trim();
+  if (s.length <= 32) return s;
+  let cut = s.slice(0, 32);
+  const sp = cut.lastIndexOf(' ');
+  if (sp > 14) cut = cut.slice(0, sp);
+  return cut.replace(/[\s,]+$/, '');
+}
+
 function buildLabelZpl(code, qty, desc) {
   const clean = (s, n) => String(s == null ? '' : s).replace(/[\r\n\t]/g, '').replace(/[\^~\\]/g, '').trim().slice(0, n);
   const c = clean(code, 40);
-  const d = clean(desc != null ? desc : 'PLACEHOLDER', 38);
+  const d = importantDesc(desc);
   const q = Math.max(1, Math.min(999, parseInt(qty, 10) || 1));
   const len = Math.max(c.length, 1);
-  // Big number stays a standard HEIGHT (46); only the character WIDTH condenses for long
-  // codes so it fits. Barcode module width also scales. Both centered in the full 2" width.
-  const numW = Math.max(16, Math.min(46, Math.floor(390 / len)));
-  const estModules = 11 * (len + 2) + 13;            // ~Code128 width in modules (safe over-estimate)
-  const modW = (estModules * 3 <= 376) ? 3 : (estModules * 2 <= 376 ? 2 : 1);
+  // Number condenses its character WIDTH for long codes so it always fits.
+  const numW = Math.max(18, Math.min(48, Math.floor(390 / len)));
+  // Barcode: FIXED module width (uniform bar thickness + height on every label),
+  // dropping to 1 only for very long codes that wouldn't otherwise fit. Centered
+  // by computing the x-origin (the ^FB,C trick does NOT center a ^BC barcode),
+  // and shifted toward the bottom.
+  const estModules = 11 * (len + 2) + 13;            // ~Code128 width in modules
+  const modW = (estModules * 2 <= 396) ? 2 : 1;
+  const bcW = estModules * modW;
+  const bcX = Math.max(4, Math.round((406 - bcW) / 2));
   return [
     '^XA', '^CI28', '^PW406', '^LL0203',
-    '^FO8,22^A0N,24,24^FB390,1,0,C,0^FD' + d + '^FS',
-    '^FO0,54^A0N,46,' + numW + '^FB406,1,0,C,0^FD' + c + '^FS',
+    '^FO8,18^A0N,22,22^FB390,1,0,C,0^FD' + d + '^FS',
+    '^FO0,48^A0N,48,' + numW + '^FB406,1,0,C,0^FD' + c + '^FS',
     '^BY' + modW + ',2.5',
-    '^FO0,108^FB406,1,0,C^BCN,60,N,N,N^FD' + c + '^FS',
+    '^FO' + bcX + ',118^BCN,64,N,N,N^FD' + c + '^FS',
     '^PQ' + q + ',0,0,N', '^XZ'
   ].join('\n');
 }
