@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '55';
+const APP_VERSION = '56';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -302,6 +302,29 @@ async function ensureSchema() {
   // own free tier is 100/day). Stops printing once the cap is hit so a runaway
   // day can't rack up overage charges.
   await pool.query(`ALTER TABLE cloud_print ADD COLUMN IF NOT EXISTS daily_limit INTEGER`);
+
+  // Multiple Zebra cloud printers (same Zebra account = shared api_key/tenant in
+  // cloud_print; each printer differs only by serial). A device picks which one
+  // to print to. Seeded once from the old single cloud_print.serial.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS printers (
+      id         SERIAL PRIMARY KEY,
+      name       TEXT NOT NULL,
+      serial     TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  {
+    const { rows: pc } = await pool.query('SELECT COUNT(*)::int AS n FROM printers');
+    if (pc[0].n === 0) {
+      const { rows: cp } = await pool.query("SELECT serial FROM cloud_print WHERE id = 1");
+      const s = cp.length ? (cp[0].serial || '') : '';
+      if (s) {
+        await pool.query("INSERT INTO printers (name, serial, sort_order) VALUES ($1, $2, 10)", ['Printer 1', s]);
+        console.log('Schema: seeded printers from existing cloud serial.');
+      }
+    }
+  }
 
   // ----- Label part descriptions (real label text instead of PLACEHOLDER) -----
   // Loaded from the weekly Distribution One export (SKU,Description). The print
@@ -1683,10 +1706,15 @@ async function enqueuePrint(who, body) {
   if (!code) return { error: 'Nothing to print — scan or type a barcode first.' };
   const qty = Math.max(1, Math.min(999, parseInt(body && body.qty, 10) || 1));
 
-  // Enforce the manager's daily cloud-call cap (only relevant when cloud is the
-  // active path). Check before inserting so a blocked attempt doesn't count.
+  // Which printer this device chose (per-device). Falls back to the first printer.
   const cfg = await getCloudConfig();
-  if (cloudConfigured(cfg) && cfg.daily_limit != null && cfg.daily_limit > 0) {
+  const cloudOn = cloudConfigured(cfg);
+  const serial = cloudOn ? await resolvePrinterSerial(body && body.printerId) : '';
+  const useCloud = cloudOn && !!serial;
+
+  // Enforce the manager's daily cloud-call cap (only when the cloud path is used).
+  // Check before inserting so a blocked attempt doesn't count.
+  if (useCloud && cfg.daily_limit != null && cfg.daily_limit > 0) {
     if ((await printCallsToday()) >= cfg.daily_limit) {
       return { ok: false, error: 'Daily print limit reached (' + cfg.daily_limit + ' for today). A manager can raise it in Manage → Label Printer.' };
     }
@@ -1701,9 +1729,9 @@ async function enqueuePrint(who, body) {
     [code, qty, zpl, who.name || null, batchId]);
   const jobId = rows[0].id;
 
-  // Preferred path: Zebra cloud (no PC). Falls back to the warehouse-PC bridge if cloud isn't set up.
-  if (cloudConfigured(cfg)) {
-    const res = await sendViaCloud(cfg, zpl);
+  // Preferred path: Zebra cloud (no PC). Falls back to the warehouse-PC bridge.
+  if (useCloud) {
+    const res = await sendViaCloud(cfg, zpl, serial);
     if (res.ok) {
       await pool.query("UPDATE print_jobs SET status='printed', printed_at=now() WHERE id=$1", [jobId]);
       return { ok: true, jobId, qty, code, via: 'cloud', printed: true };
@@ -2024,15 +2052,71 @@ async function printCallsToday() {
     "SELECT COUNT(*)::int AS n FROM print_jobs WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = (now() AT TIME ZONE 'America/Los_Angeles')::date");
   return rows[0].n;
 }
+// Account-level cloud config (the per-printer serial is resolved separately).
 function cloudConfigured(cfg) {
-  return !!(cfg && cfg.enabled && cfg.api_key && cfg.tenant_id && cfg.serial);
+  return !!(cfg && cfg.enabled && cfg.api_key && cfg.tenant_id);
 }
 
-// POST the label (ZPL) to Zebra's cloud, which relays it to the registered printer.
-async function sendViaCloud(cfg, zpl) {
+// ----- Printers (multiple Zebra cloud printers; each device picks one) -----
+async function listPrinters() {
+  const { rows } = await pool.query('SELECT id, name, serial FROM printers ORDER BY sort_order, id');
+  return rows;
+}
+async function getPrinters(who) {
+  if (!who) return { error: 'Please sign in.' };
+  const mgr = isManager(who);
+  const rows = await listPrinters();
+  return { printers: rows.map(p => mgr ? { id: p.id, name: p.name, serial: p.serial } : { id: p.id, name: p.name }) };
+}
+// Serial for the chosen printer (by id); else the first printer; else the legacy
+// single serial on cloud_print.
+async function resolvePrinterSerial(printerId) {
+  const pid = cleanInt(printerId);
+  if (pid != null) {
+    const { rows } = await pool.query('SELECT serial FROM printers WHERE id = $1', [pid]);
+    if (rows.length && rows[0].serial) return rows[0].serial;
+  }
+  const { rows } = await pool.query('SELECT serial FROM printers ORDER BY sort_order, id LIMIT 1');
+  if (rows.length && rows[0].serial) return rows[0].serial;
+  const cfg = await getCloudConfig();
+  return cfg.serial || '';
+}
+async function addPrinter(who, p) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  p = p || {};
+  const name = String(p.name || '').trim().slice(0, 60);
+  const serial = String(p.serial || '').trim().slice(0, 120);
+  if (!name) return { error: 'Printer name is required' };
+  if (!serial) return { error: 'Printer serial is required' };
+  const { rows: mx } = await pool.query('SELECT COALESCE(MAX(sort_order),0)+10 AS n FROM printers');
+  await pool.query('INSERT INTO printers (name, serial, sort_order) VALUES ($1, $2, $3)', [name, serial, mx[0].n]);
+  return { ok: true };
+}
+async function updatePrinter(who, p) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  p = p || {};
+  const id = cleanInt(p.id);
+  const name = String(p.name || '').trim().slice(0, 60);
+  const serial = String(p.serial || '').trim().slice(0, 120);
+  if (id === null) return { error: 'Bad printer id' };
+  if (!name || !serial) return { error: 'Name and serial are required' };
+  const { rowCount } = await pool.query('UPDATE printers SET name=$1, serial=$2 WHERE id=$3', [name, serial, id]);
+  if (!rowCount) return { error: 'Printer not found' };
+  return { ok: true };
+}
+async function removePrinter(who, id) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const pid = cleanInt(id);
+  if (pid === null) return { error: 'Bad printer id' };
+  await pool.query('DELETE FROM printers WHERE id = $1', [pid]);
+  return { ok: true };
+}
+
+// POST the label (ZPL) to Zebra's cloud, which relays it to the chosen printer.
+async function sendViaCloud(cfg, zpl, serial) {
   try {
     const form = new FormData();
-    form.append('sn', cfg.serial);
+    form.append('sn', serial);
     form.append('zpl_file', new Blob([zpl], { type: 'text/plain' }), 'label.zpl');
     const r = await fetch('https://api.zebra.com/v2/devices/printers/send', {
       method: 'POST',
@@ -2051,7 +2135,7 @@ async function sendViaCloud(cfg, zpl) {
 async function getCloudSettings(who) {
   if (!isManager(who)) return { error: 'Manager only' };
   const cfg = await getCloudConfig();
-  return { enabled: !!cfg.enabled, hasApiKey: !!cfg.api_key, tenant: cfg.tenant_id || '', serial: cfg.serial || '', dailyLimit: cfg.daily_limit != null ? cfg.daily_limit : null };
+  return { enabled: !!cfg.enabled, hasApiKey: !!cfg.api_key, tenant: cfg.tenant_id || '', dailyLimit: cfg.daily_limit != null ? cfg.daily_limit : null, printers: await listPrinters() };
 }
 
 // Manager sets/clears the daily cloud-call cap. Blank/0/negative = no cap.
@@ -2065,15 +2149,14 @@ async function setPrintDailyLimit(who, limit) {
 async function setCloudSettings(who, body) {
   if (!isManager(who)) return { error: 'Manager only' };
   const tenant = String(body && body.tenant || '').trim().slice(0, 120);
-  const serial = String(body && body.serial || '').trim().slice(0, 120);
   const enabled = !!(body && body.enabled);
   const newKey = (body && body.apiKey != null) ? String(body.apiKey).trim() : '';
   if (newKey) {
-    await pool.query('UPDATE cloud_print SET api_key=$1, tenant_id=$2, serial=$3, enabled=$4, updated_at=now() WHERE id=1',
-      [newKey.slice(0, 300), tenant, serial, enabled]);
+    await pool.query('UPDATE cloud_print SET api_key=$1, tenant_id=$2, enabled=$3, updated_at=now() WHERE id=1',
+      [newKey.slice(0, 300), tenant, enabled]);
   } else {
-    await pool.query('UPDATE cloud_print SET tenant_id=$1, serial=$2, enabled=$3, updated_at=now() WHERE id=1',
-      [tenant, serial, enabled]);
+    await pool.query('UPDATE cloud_print SET tenant_id=$1, enabled=$2, updated_at=now() WHERE id=1',
+      [tenant, enabled]);
   }
   return await getCloudSettings(who);
 }
@@ -2588,6 +2671,10 @@ app.post('/', async (req, res) => {
         case 'getPrintUsage':    out = await getPrintUsage(who); break;
         case 'getPrintLog':      out = await getPrintLog(who); break;
         case 'setPrintDailyLimit': out = await setPrintDailyLimit(who, body.limit); break;
+        case 'getPrinters':        out = await getPrinters(who); break;
+        case 'addPrinter':         out = await addPrinter(who, body.printer); break;
+        case 'updatePrinter':      out = await updatePrinter(who, body.printer); break;
+        case 'removePrinter':      out = await removePrinter(who, body.id); break;
         case 'getPartImportInfo':  out = await getPartImportInfo(who); break;
         case 'setPartSourceUrl':   out = await setPartSourceUrl(who, body.url); break;
         case 'refreshPartsNow':    out = await refreshPartsNow(who); break;

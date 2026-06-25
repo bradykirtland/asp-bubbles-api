@@ -594,6 +594,9 @@
   .lp-stepper button:last-child { border-radius:0 12px 12px 0; }
   .lp-stepper input { width:54px; height:48px; text-align:center; font-size:20px; font-weight:700; border:1px solid var(--border); border-left:0; border-right:0; -moz-appearance:textfield; }
   @media (max-width:360px) { .lp-qtygrp .lp-lab { display:none; } }
+  .lp-printerbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; padding:8px 10px; background:var(--accent-soft); border-radius:10px; }
+  .lp-printerbar[hidden] { display:none; }
+  .lp-printerbar select { flex:1; min-width:0; font:inherit; font-weight:700; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:9px 11px; }
   .lp-stepper input::-webkit-outer-spin-button, .lp-stepper input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
   .lp-previewwrap { display:flex; flex-direction:column; align-items:center; gap:6px; }
   .lp-label { width:300px; height:150px; background:#fff; border:1px solid #d4d4d4; border-radius:6px; box-shadow:var(--shadow-card); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:10px; }
@@ -1101,6 +1104,10 @@
     <div class="lp-wrap">
       <div id="lpPrintView">
       <div class="lp-hint">Scan a part barcode (or type the number), set the quantity, then tap Print. Labels print on the Zebra ZQ620.</div>
+      <div class="lp-printerbar" id="lpPrinterBar" hidden>
+        <span class="lp-lab">Printer</span>
+        <select id="lpPrinterSel"></select>
+      </div>
       <label class="lp-field">
         <span class="lp-lab">Part barcode</span>
         <input id="lpCode" type="text" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Scan here… or tap to type">
@@ -1158,8 +1165,8 @@
             <div style="font-weight:600; margin-bottom:6px;">☁️ Cloud printing <span style="font-weight:400;">(managers) — print with no warehouse PC</span></div>
             <label class="lp-clab">API key <input id="lpcApiKey" type="password" autocomplete="off" placeholder="paste API key"></label>
             <label class="lp-clab">Tenant ID <input id="lpcTenant" type="text" autocomplete="off"></label>
-            <label class="lp-clab">Printer serial <input id="lpcSerial" type="text" autocomplete="off"></label>
             <label class="lp-ccheck"><input id="lpcEnabled" type="checkbox"> Use cloud printing</label>
+            <div style="font-size:12px; color:var(--muted); margin-top:4px;">Add/remove printers in Manage → Label Printer.</div>
             <div style="margin-top:6px;"><button class="ghost lp-mini" id="lpcSave">Save</button> <span id="lpcMsg" style="font-size:12px; color:var(--muted);"></span></div>
           </div>
           <p style="margin:8px 0 4px;">Printing works on <b>any device</b> — nothing to install. Labels print via Zebra's cloud (once set up above), or via the warehouse PC bridge as a fallback.</p>
@@ -1425,8 +1432,20 @@
         <div class="alist" id="clTaskList"></div>
       </div>
 
-      <!-- Label Printer: daily cloud-call cap -->
+      <!-- Label Printer: printers, daily cloud-call cap, descriptions -->
       <div class="asec" id="asec-label" hidden>
+        <div class="ftitle" style="margin-bottom:4px;">Printers</div>
+        <p class="muted" style="font-size:12px; margin:0 0 8px;">Each Zebra printer is enrolled in the same Zebra Cloud account; add it here by name + serial. Workers pick which printer to print to on the Label Printer screen.</p>
+        <div id="lblPrinterList" class="alist"></div>
+        <div class="row2" style="margin-top:8px;">
+          <div class="field"><label>Printer name</label><input type="text" id="lblPrName" placeholder="e.g. Front desk"></div>
+          <div class="field"><label>Serial number</label><input type="text" id="lblPrSerial" placeholder="e.g. XXZUJ231600583"></div>
+        </div>
+        <div class="formbtns" style="justify-content:flex-start;">
+          <button class="primary" id="lblPrAdd">Add printer</button>
+        </div>
+        <hr style="border:none; border-top:1px solid var(--border); margin:18px 0;">
+
         <p class="muted" style="font-size:12px; margin:0 0 12px;">Each different part number sent to the printer = <strong>1 cloud call</strong> (the quantity/copies are free). Zebra's free tier is <strong>100 calls/day</strong>; beyond that they bill ~$0.01 each. Set a daily cap to stop printing once a number of calls is reached.</p>
         <div class="field"><label>Daily cloud-call limit (leave blank for no cap)</label><input type="number" id="lblLimit" min="0" step="1" placeholder="e.g. 100"></div>
         <div class="formbtns" style="justify-content:flex-start;">
@@ -2295,6 +2314,7 @@ async function sendTestPushNow() {
 
 // ----- Manage → Label Printer (daily cloud-call cap) -----
 async function renderLabelAdmin() {
+  renderPrinterAdmin();
   let usage = null;
   try { usage = await apiCall("getPrintUsage", { pin: session.pin }); } catch (_) {}
   if (usage && !usage.error) {
@@ -2353,6 +2373,28 @@ async function saveLabelLimit() {
   await renderLabelAdmin();
 }
 
+async function renderPrinterAdmin() {
+  const el = $("lblPrinterList");
+  if (!el) return;
+  let list = [];
+  try { const r = await apiCall("getPrinters", { pin: session.pin }); list = (r && r.printers) || []; } catch (_) {}
+  el.innerHTML = list.length
+    ? list.map(p => `<div class="arow"><div class="ainfo"><div class="atitle">${escapeHtml(p.name)}</div><div class="asub">Serial: ${escapeHtml(p.serial || "—")}</div></div><div class="aactions"><button class="ghost" data-rmprinter="${p.id}">Remove</button></div></div>`).join("")
+    : `<div class="muted" style="font-size:13px;">No printers yet — add one below.</div>`;
+  el.querySelectorAll("[data-rmprinter]").forEach(b => b.addEventListener("click", () => lpRemovePrinter(parseInt(b.dataset.rmprinter, 10))));
+}
+async function lpAddPrinter() {
+  const res = await apiCall("addPrinter", { pin: session.pin, printer: { name: $("lblPrName").value, serial: $("lblPrSerial").value } });
+  if (res && res.error) { adminError(res.error); return; }
+  $("lblPrName").value = ""; $("lblPrSerial").value = "";
+  await renderPrinterAdmin();
+}
+async function lpRemovePrinter(id) {
+  const res = await apiCall("removePrinter", { pin: session.pin, id: id });
+  if (res && res.error) { adminError(res.error); return; }
+  await renderPrinterAdmin();
+}
+
 async function uploadPartCsv(file) {
   if (!file) return;
   $("lblPartInfo").textContent = "Uploading " + file.name + "…";
@@ -2408,6 +2450,7 @@ function initLabelPrinter() {
   setTimeout(() => { try { $("lpCode").focus(); } catch (_) {} }, 60);
   switchLpTab("print");
   lpDetectPrinter();
+  lpLoadPrinters();
   lpLoadCloudSettings();
   lpLoadUsage();
 }
@@ -2538,7 +2581,7 @@ function lpSetStatus(msg, kind) {
 // Send one label to the server (cloud, or PC-bridge fallback). Returns {ok, printed, error}.
 async function lpSendOne(code, qty, batchId) {
   try {
-    const res = await apiCall("enqueuePrint", { pin: session.pin, code: code, qty: qty, batchId: batchId || null });
+    const res = await apiCall("enqueuePrint", { pin: session.pin, code: code, qty: qty, batchId: batchId || null, printerId: lpSelectedPrinterId() });
     if (res && res.error) return { ok: false, error: res.error };
     return { ok: true, printed: !!(res && (res.printed || res.via === "cloud" || res.bridgeOnline)) };
   } catch (e) {
@@ -2781,6 +2824,26 @@ async function lpLoadUsage() {
   } catch (_) { row.hidden = true; }
 }
 
+// ----- Per-device printer choice (remembered on this device) -----
+function lpSelectedPrinterId() {
+  const sel = $("lpPrinterSel");
+  if (sel && sel.value) return parseInt(sel.value, 10);
+  const saved = localStorage.getItem("lpPrinterId");
+  return saved ? parseInt(saved, 10) : null;
+}
+async function lpLoadPrinters() {
+  const bar = $("lpPrinterBar"), sel = $("lpPrinterSel");
+  if (!bar || !sel) return;
+  let printers = [];
+  try { const r = await apiCall("getPrinters", { pin: session.pin }); printers = (r && r.printers) || []; } catch (_) {}
+  if (!printers.length) { bar.hidden = true; sel.innerHTML = ""; return; }
+  const saved = localStorage.getItem("lpPrinterId");
+  const chosen = printers.some(p => String(p.id) === String(saved)) ? saved : String(printers[0].id);
+  sel.innerHTML = printers.map(p => `<option value="${p.id}"${String(p.id) === String(chosen) ? " selected" : ""}>${escapeHtml(p.name)}</option>`).join("");
+  localStorage.setItem("lpPrinterId", chosen);
+  bar.hidden = printers.length < 2;   // only show the toggle when there's a real choice
+}
+
 // Manager-only cloud-printing settings (Zebra SendFileToPrinter).
 async function lpLoadCloudSettings() {
   const row = $("lpCloudRow");
@@ -2790,7 +2853,6 @@ async function lpLoadCloudSettings() {
     if (!s || s.error) { row.hidden = true; return; }   // not a manager
     row.hidden = false;
     $("lpcTenant").value = s.tenant || "";
-    $("lpcSerial").value = s.serial || "";
     $("lpcEnabled").checked = !!s.enabled;
     $("lpcApiKey").value = "";
     $("lpcApiKey").placeholder = s.hasApiKey ? "•••••• saved (leave blank to keep)" : "paste API key";
@@ -2803,7 +2865,6 @@ async function lpSaveCloudSettings() {
       pin: session.pin,
       apiKey: $("lpcApiKey").value,
       tenant: $("lpcTenant").value,
-      serial: $("lpcSerial").value,
       enabled: $("lpcEnabled").checked
     });
     if (res && res.error) { $("lpcMsg").textContent = res.error; return; }
@@ -4482,6 +4543,8 @@ $("mNotifyToggle").addEventListener("click", toggleNotifyAdmin);
 $("mNotifyTest").addEventListener("click", async () => { await sendTestPushNow(); renderNotifyAdmin(); });
 $("mNotifyEnableDevice").addEventListener("click", async () => { await enablePush(); renderNotifyAdmin(); });
 $("lblLimitSave").addEventListener("click", saveLabelLimit);
+$("lblPrAdd").addEventListener("click", lpAddPrinter);
+$("lpPrinterSel").addEventListener("change", () => { if ($("lpPrinterSel").value) localStorage.setItem("lpPrinterId", $("lpPrinterSel").value); });
 $("lblCsvBtn").addEventListener("click", () => $("lblCsvFile").click());
 $("lblCsvFile").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; uploadPartCsv(f); e.target.value = ""; });
 $("lblSrcSave").addEventListener("click", saveLabelSrcUrl);
