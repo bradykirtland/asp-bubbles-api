@@ -754,6 +754,14 @@
   .cl-reassign { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:4px 0 10px; padding:8px 10px; background:var(--bg); border:1px dashed var(--border); border-radius:8px; }
   .cl-reassign label { font-size:12px; font-weight:600; color:var(--muted); }
   .cl-reassign select { flex:1; min-width:150px; font:inherit; color:inherit; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:7px 11px; font-weight:600; cursor:pointer; }
+  .cl-rotbar { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-card); padding:12px 14px; margin-bottom:14px; }
+  .cl-rottitle { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:8px; }
+  .cl-rotlist { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+  .cl-rotperson { font-size:13px; font-weight:600; padding:3px 9px; border-radius:99px; background:var(--bg); border:1px solid var(--border); }
+  .cl-rotperson.cl-rot-today { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .cl-rotperson.cl-rot-done { color:var(--muted); text-decoration:line-through; opacity:.7; }
+  .cl-rotsep { color:var(--muted); font-size:12px; }
+  .cl-rotnote { font-size:12px; color:var(--muted); margin-top:8px; }
 
   /* Filter bar (activity + checklist) */
   .filterbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
@@ -3296,12 +3304,27 @@ function wireRunCards(body) {
 }
 
 // ----- Manager review -----
+// Shows the expected rotation order for the current cycle (done · today · upcoming).
+function rotationBarHtml(rot) {
+  if (!rot || !rot.length) return "";
+  const chips = rot.map(p => {
+    const cls = p.today ? "cl-rot-today" : (p.done ? "cl-rot-done" : "");
+    const tag = p.today ? " · today" : (p.done ? " ✓" : "");
+    return `<span class="cl-rotperson ${cls}">${escapeHtml(p.name)}${tag}</span>`;
+  }).join('<span class="cl-rotsep">→</span>');
+  return `<div class="cl-rotbar">
+    <div class="cl-rottitle">Closing order — this cycle</div>
+    <div class="cl-rotlist">${chips}</div>
+    <div class="cl-rotnote">Reshuffles into a new random order once everyone has had a turn.</div>
+  </div>`;
+}
+
 function renderChecklistAdmin() {
   const body = $("checklistBody");
   $("checklistHeading").textContent = "Closing Checklist — review";
   const data = state.checklistAdmin;
   if (!data || !data.runs || !data.runs.length) {
-    body.innerHTML = `<div class="cl-banner info">No checklist activity yet.</div>`;
+    body.innerHTML = rotationBarHtml(data && data.rotation) || `<div class="cl-banner info">No checklist activity yet.</div>`;
     return;
   }
   const toggle = `<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
@@ -3326,7 +3349,7 @@ function renderChecklistAdmin() {
     ? runCardsHtml(runs, data.today, { interactive: true, checkMode: state.checkMode })
     : `<div class="cl-banner info">No checklists for that name and/or date. Tap Clear to reset.</div>`;
 
-  body.innerHTML = toggle + filterBar + list;
+  body.innerHTML = rotationBarHtml(data.rotation) + toggle + filterBar + list;
   $("clCheckModeBtn").addEventListener("click", () => { state.checkMode = !state.checkMode; renderChecklistAdmin(); });
   $("clfName").addEventListener("change", () => { state.checklistFilter.name = $("clfName").value; renderChecklistAdmin(); });
   $("clfDate").addEventListener("change", () => { state.checklistFilter.date = $("clfDate").value; renderChecklistAdmin(); });
