@@ -1111,7 +1111,7 @@
           <span class="lp-lab">Quantity</span>
           <div class="lp-stepper">
             <button type="button" id="lpMinus" aria-label="Fewer">−</button>
-            <input id="lpQty" type="number" min="1" max="999" value="1" inputmode="none">
+            <input id="lpQty" type="text" inputmode="none" value="1">
             <button type="button" id="lpPlus" aria-label="More">＋</button>
           </div>
         </div>
@@ -4525,7 +4525,13 @@ $("tileLabel").addEventListener("click", () => showScreen("label"));
 // kept covering the app. So force inputmode="none" on every field, always — the
 // soft keyboard never shows; hardware keys still type into the focused field.
 (function killSoftKeyboard() {
-  function suppress(el) { if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) el.inputMode = "none"; }
+  function suppress(el) {
+    if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) return;
+    // type="number" forces the numeric keypad on some Android builds even with
+    // inputmode="none" — turn it into a plain text field (we parse values in JS).
+    if (el.tagName === "INPUT" && el.type === "number") { try { el.type = "text"; } catch (_) {} }
+    el.inputMode = "none";
+  }
   // Before focus (tap) and on focus — belt and suspenders so it can't slip through.
   document.addEventListener("pointerdown", (e) => { const el = e.target.closest ? e.target.closest("input, textarea") : null; suppress(el); }, true);
   document.addEventListener("focusin", (e) => suppress(e.target), true);
