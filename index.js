@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '43';
+const APP_VERSION = '44';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -302,6 +302,31 @@ async function ensureSchema() {
   // own free tier is 100/day). Stops printing once the cap is hit so a runaway
   // day can't rack up overage charges.
   await pool.query(`ALTER TABLE cloud_print ADD COLUMN IF NOT EXISTS daily_limit INTEGER`);
+
+  // ----- Label part descriptions (real label text instead of PLACEHOLDER) -----
+  // Loaded from the weekly Distribution One export (SKU,Description). The print
+  // path looks up each scanned code here. A token (auto-generated) lets the
+  // headless weekly job POST a fresh CSV with no user login.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS part_descriptions (
+      code        TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT ''
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS part_desc_lower_idx ON part_descriptions (lower(code))`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS part_meta (
+      id          INTEGER PRIMARY KEY,
+      token       TEXT,
+      last_import TIMESTAMPTZ,
+      count       INTEGER NOT NULL DEFAULT 0
+    )`);
+  await pool.query(`INSERT INTO part_meta (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+  {
+    const { rows: pm } = await pool.query('SELECT token FROM part_meta WHERE id = 1');
+    if (!pm.length || !pm[0].token) {
+      await pool.query('UPDATE part_meta SET token = $1 WHERE id = 1', [crypto.randomBytes(24).toString('hex')]);
+    }
+  }
 
   // ----- Push notifications (Web Push / VAPID) -----
   // The server's VAPID keypair is generated here on first boot and stored in the
@@ -1638,9 +1663,8 @@ async function enqueuePrint(who, body) {
     }
   }
 
-  // TODO: when the parts list (Excel/SQL) is imported, look up the real description
-  // for `code` here instead of the placeholder.
-  const description = 'PLACEHOLDER';
+  // Real description from the imported parts list (blank if the code is unknown).
+  const description = await lookupDescription(code);
   const zpl = buildLabelZpl(code, qty, description);
   const batchId = (body && body.batchId) ? String(body.batchId).slice(0, 40) : null;
   const { rows } = await pool.query(
@@ -1709,6 +1733,102 @@ async function bridgeOk(body) {
   if (BRIDGE_TOKEN && supplied === BRIDGE_TOKEN) return true;     // optional env override
   const tok = await currentBridgeToken();
   return !!tok && supplied === tok;
+}
+
+// ----- Part descriptions (label text lookup + import) -----
+// Minimal CSV parser for the "SKU,Description" export: handles quoted fields,
+// doubled "" escapes, and CRLF. Returns [{code, description}] sans header.
+function parseSkuCsv(text) {
+  const recs = [];
+  let field = '', rec = [], inQ = false;
+  const endField = () => { rec.push(field); field = ''; };
+  const endRec = () => { endField(); if (rec.some(x => x !== '')) recs.push(rec); rec = []; };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') { inQ = true; }
+    else if (c === ',') { endField(); }
+    else if (c === '\n') { endRec(); }
+    else if (c === '\r') { /* skip */ }
+    else { field += c; }
+  }
+  endRec();
+  const out = [];
+  recs.forEach((r, i) => {
+    const code = String(r[0] || '').trim();
+    if (!code) return;
+    if (i === 0 && /^sku$/i.test(code)) return;     // header row
+    out.push({ code, description: String(r[1] || '').trim() });
+  });
+  return out;
+}
+
+async function lookupDescription(code) {
+  const c = String(code || '').trim();
+  if (!c) return '';
+  const { rows } = await pool.query(
+    'SELECT description FROM part_descriptions WHERE lower(code) = lower($1) LIMIT 1', [c]);
+  return rows.length ? (rows[0].description || '') : '';
+}
+
+// Replace the whole description set from an uploaded CSV (full weekly snapshot).
+// Auth: the import token (headless weekly job) OR a logged-in manager.
+async function importPartDescriptions(body) {
+  body = body || {};
+  const { rows: pm } = await pool.query('SELECT token FROM part_meta WHERE id = 1');
+  const tok = pm.length ? pm[0].token : '';
+  let authed = !!(body.token && tok && body.token === tok);
+  if (!authed) { const who = await resolveAuth(body); authed = isManager(who); }
+  if (!authed) return { error: 'Not authorized' };
+
+  let items = [];
+  if (typeof body.csv === 'string' && body.csv.length) items = parseSkuCsv(body.csv);
+  else if (Array.isArray(body.rows)) {
+    items = body.rows.map(r => ({ code: String(r.code || '').trim(), description: String(r.description || '').trim() })).filter(r => r.code);
+  }
+  if (!items.length) return { error: 'No rows found in the upload.' };
+
+  const map = new Map();
+  for (const it of items) map.set(it.code, it.description);   // de-dupe, last wins
+  const codes = [...map.keys()];
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('TRUNCATE part_descriptions');
+    const B = 1000;
+    for (let i = 0; i < codes.length; i += B) {
+      const chunk = codes.slice(i, i + B);
+      const vals = [], params = [];
+      chunk.forEach((code, j) => { params.push(code, map.get(code)); vals.push('($' + (j * 2 + 1) + ',$' + (j * 2 + 2) + ')'); });
+      await client.query(
+        'INSERT INTO part_descriptions (code, description) VALUES ' + vals.join(',') +
+        ' ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description', params);
+    }
+    await client.query('UPDATE part_meta SET last_import = now(), count = $1 WHERE id = 1', [codes.length]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    return { error: 'Import failed: ' + (e.message || e) };
+  } finally {
+    client.release();
+  }
+  return { ok: true, count: codes.length };
+}
+
+async function getPartImportInfo(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const { rows } = await pool.query('SELECT token, last_import, count FROM part_meta WHERE id = 1');
+  const m = rows[0] || {};
+  return { count: m.count || 0, lastImport: m.last_import || null, token: m.token || '' };
+}
+
+// Preview helper: look up one description (for the on-screen label preview).
+async function lookupPart(who, code) {
+  if (!who) return { error: 'Not authorized' };
+  return { description: await lookupDescription(code) };
 }
 
 // ----- Cloud printing (Zebra SendFileToPrinter) -----
@@ -1810,7 +1930,7 @@ const app = express();
 app.use(cors({ origin: true }));
 // PWA posts JSON as text/plain (to avoid CORS preflight in the old setup).
 // Accept any content-type and parse manually.
-app.use(express.text({ type: '*/*', limit: '64kb' }));
+app.use(express.text({ type: '*/*', limit: '6mb' }));   // 6mb: large enough for the full SKU-description CSV import
 
 // Serve the PWA static files. They live alongside index.js at the project root
 // (matches the asp-bubbles-api GitHub repo layout). We serve only an explicit
@@ -2216,6 +2336,7 @@ app.post('/', async (req, res) => {
       case 'getPublic':   out = await getPublic(); break;
       case 'getVersion':  out = { version: APP_VERSION }; break;
       case 'getVapidPublicKey': out = await getVapidPublicKey(); break;
+      case 'importPartDescriptions': out = await importPartDescriptions(body); break;
       case 'adminLogin':  out = await adminLogin(body); break;
       case 'adminSignup': out = await adminSignup(body); break;
       case 'adminLogout': out = await adminLogout(body); break;
@@ -2285,6 +2406,8 @@ app.post('/', async (req, res) => {
         case 'getPrintUsage':    out = await getPrintUsage(who); break;
         case 'getPrintLog':      out = await getPrintLog(who); break;
         case 'setPrintDailyLimit': out = await setPrintDailyLimit(who, body.limit); break;
+        case 'getPartImportInfo':  out = await getPartImportInfo(who); break;
+        case 'lookupPart':         out = await lookupPart(who, body.code); break;
         // ----- Push notifications -----
         case 'savePushSubscription':   out = await savePushSubscription(who, body); break;
         case 'removePushSubscription': out = await removePushSubscription(who, body); break;

@@ -1119,7 +1119,7 @@
       <button class="ghost" id="lpClear" hidden>Clear</button>
       <div class="lp-previewwrap">
         <div class="lp-label">
-          <div class="lp-desc" id="lpDesc">PLACEHOLDER</div>
+          <div class="lp-desc" id="lpDesc"></div>
           <div class="lp-num" id="lpNum">—</div>
           <svg id="lpBarcode" class="lp-bc"></svg>
         </div>
@@ -1433,6 +1433,21 @@
           <button class="primary" id="lblLimitSave">Save limit</button>
         </div>
         <div id="lblUsage" class="muted" style="font-size:13px; margin-top:14px;"></div>
+
+        <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;">
+        <div class="ftitle" style="margin-bottom:4px;">Part descriptions</div>
+        <p class="muted" style="font-size:12px; margin:0 0 10px;">The text printed above the barcode comes from the Distribution One export (SKU → description). Upload the latest CSV here, or set the weekly job to push it automatically (below).</p>
+        <div id="lblPartInfo" class="muted" style="font-size:13px; margin-bottom:10px;"></div>
+        <input type="file" id="lblCsvFile" accept=".csv,text/csv" hidden>
+        <div class="formbtns" style="justify-content:flex-start;">
+          <button class="primary" id="lblCsvBtn">Upload CSV…</button>
+        </div>
+        <details style="margin-top:14px;">
+          <summary class="muted" style="font-size:12px; cursor:pointer; font-weight:600;">Automatic weekly update (for the data job)</summary>
+          <p class="muted" style="font-size:12px; margin:8px 0 6px;">Have the Saturday job POST the CSV to this URL as JSON <code>{ "action":"importPartDescriptions", "token":"…", "csv":"&lt;file contents&gt;" }</code>:</p>
+          <div style="font-size:12px; word-break:break-all;"><strong>URL:</strong> <span id="lblImportUrl"></span></div>
+          <div style="font-size:12px; word-break:break-all; margin-top:4px;"><strong>Token:</strong> <code id="lblImportToken" style="font-size:11px;"></code></div>
+        </details>
       </div>
 
       <!-- Notifications: manager master control -->
@@ -2254,10 +2269,25 @@ async function sendTestPushNow() {
 async function renderLabelAdmin() {
   let usage = null;
   try { usage = await apiCall("getPrintUsage", { pin: session.pin }); } catch (_) {}
-  if (!usage || usage.error) { $("lblUsage").textContent = ""; $("lblLimit").value = ""; return; }
-  $("lblLimit").value = (usage.dailyLimit != null) ? usage.dailyLimit : "";
-  const cap = (usage.dailyLimit != null) ? usage.dailyLimit : null;
-  $("lblUsage").textContent = "Used today: " + usage.today + (cap != null ? (" of " + cap + " (your cap)") : " — no cap set (Zebra free tier is 100/day).");
+  if (usage && !usage.error) {
+    $("lblLimit").value = (usage.dailyLimit != null) ? usage.dailyLimit : "";
+    const cap = (usage.dailyLimit != null) ? usage.dailyLimit : null;
+    $("lblUsage").textContent = "Used today: " + usage.today + (cap != null ? (" of " + cap + " (your cap)") : " — no cap set (Zebra free tier is 100/day).");
+  } else { $("lblUsage").textContent = ""; $("lblLimit").value = ""; }
+
+  // Part descriptions info + the import URL/token for the weekly job.
+  $("lblImportUrl").textContent = location.origin + "/";
+  let info = null;
+  try { info = await apiCall("getPartImportInfo", { pin: session.pin }); } catch (_) {}
+  if (info && !info.error) {
+    $("lblImportToken").textContent = info.token || "(none)";
+    if (info.count > 0) {
+      const when = info.lastImport ? new Date(info.lastImport).toLocaleString() : "unknown";
+      $("lblPartInfo").textContent = Number(info.count).toLocaleString() + " descriptions loaded · last updated " + when;
+    } else {
+      $("lblPartInfo").textContent = "No descriptions loaded yet — labels print without a description line until you upload the CSV.";
+    }
+  }
 }
 
 async function saveLabelLimit() {
@@ -2265,6 +2295,20 @@ async function saveLabelLimit() {
   const res = await apiCall("setPrintDailyLimit", { pin: session.pin, limit: raw === "" ? 0 : raw });
   if (res && res.error) { adminError(res.error); return; }
   await renderLabelAdmin();
+}
+
+async function uploadPartCsv(file) {
+  if (!file) return;
+  $("lblPartInfo").textContent = "Uploading " + file.name + "…";
+  try {
+    const text = await file.text();
+    const res = await apiCall("importPartDescriptions", { pin: session.pin, csv: text });
+    if (res && res.error) { $("lblPartInfo").textContent = "Upload failed: " + res.error; return; }
+    await renderLabelAdmin();
+    alert("Loaded " + Number(res.count || 0).toLocaleString() + " part descriptions ✓");
+  } catch (e) {
+    $("lblPartInfo").textContent = "Upload failed: " + (e && e.message ? e.message : e);
+  }
 }
 
 // The toolbar Refresh button reloads whatever screen you're actually looking at.
@@ -2293,7 +2337,7 @@ async function refreshCurrent() {
    (action "enqueuePrint"); a small "print bridge" on the warehouse PC polls the
    server and sends the ZPL to the printer over the LAN. Here we just enqueue and
    show whether that bridge/PC is currently online. */
-const lp = { last: null, batch: [], actJobs: [], actSearch: "", actName: "", actDate: "" };
+const lp = { last: null, batch: [], actJobs: [], actSearch: "", actName: "", actDate: "", desc: "", descTimer: null };
 
 function initLabelPrinter() {
   lpSetStatus("");
@@ -2327,6 +2371,7 @@ function lpQtyVal() {
 function lpRenderPreview() {
   const code = lpCleanCode($("lpCode").value);
   $("lpNum").textContent = code || "—";
+  lpLookupDesc(code);
   lpUpdatePrintLabel();
   const svg = $("lpBarcode");
   if (!code) { svg.innerHTML = ""; return; }
@@ -2335,6 +2380,23 @@ function lpRenderPreview() {
       JsBarcode(svg, code, { format: "CODE128", displayValue: false, margin: 0, height: 54, width: 1.7 });
     } catch (e) { svg.innerHTML = ""; }
   }
+}
+
+// Fetch the description for the scanned code (debounced) so the preview shows the
+// real label text. The printed label uses the server's own lookup regardless.
+function lpLookupDesc(code) {
+  clearTimeout(lp.descTimer);
+  const c = lpCleanCode(code);
+  if (!c) { lp.desc = ""; $("lpDesc").textContent = ""; return; }
+  $("lpDesc").textContent = "…";
+  lp.descTimer = setTimeout(async () => {
+    let desc = "";
+    try { const r = await apiCall("lookupPart", { pin: session.pin, code: c }); desc = (r && r.description) || ""; } catch (_) {}
+    if (lpCleanCode($("lpCode").value) !== c) return;   // code changed while waiting
+    lp.desc = desc;
+    $("lpDesc").textContent = desc || "(no description on file)";
+    lpUpdatePrintLabel();
+  }, 250);
 }
 
 // Build ZPL for a 2" x 1" label @ 203 dpi (406 x 203 dots): big part number on top,
@@ -2350,7 +2412,7 @@ function lpBuildZpl(code, qty) {
     "^CI28",
     "^PW406",
     "^LL0203",
-    "^FO8,22^A0N,24,24^FB390,1,0,C,0^FDPLACEHOLDER^FS",
+    "^FO8,22^A0N,24,24^FB390,1,0,C,0^FD" + String(lp.desc || "").replace(/[\^~\\]/g, "").slice(0, 38) + "^FS",
     "^FO0,54^A0N,46," + lpNumW(code) + "^FB406,1,0,C,0^FD" + code + "^FS",
     "^BY" + lpModW(code) + ",2.5",
     "^FO0,108^FB406,1,0,C^BCN,60,N,N,N^FD" + code + "^FS",
@@ -4352,6 +4414,8 @@ $("mNotifyToggle").addEventListener("click", toggleNotifyAdmin);
 $("mNotifyTest").addEventListener("click", async () => { await sendTestPushNow(); renderNotifyAdmin(); });
 $("mNotifyEnableDevice").addEventListener("click", async () => { await enablePush(); renderNotifyAdmin(); });
 $("lblLimitSave").addEventListener("click", saveLabelLimit);
+$("lblCsvBtn").addEventListener("click", () => $("lblCsvFile").click());
+$("lblCsvFile").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; uploadPartCsv(f); e.target.value = ""; });
 
 $("aClose").addEventListener("click", () => { $("award").hidden = true; });
 
