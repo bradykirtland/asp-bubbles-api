@@ -1447,6 +1447,18 @@
         <div class="formbtns" style="justify-content:flex-start;">
           <button class="primary" id="lblPrAdd">Add printer</button>
         </div>
+        <details style="margin-top:12px;">
+          <summary class="muted" style="font-size:12px; cursor:pointer; font-weight:600;">How to add a new Zebra printer (step by step)</summary>
+          <ol class="muted" style="font-size:12px; margin:8px 0 0; padding-left:18px; line-height:1.5;">
+            <li>Power on the new Zebra and connect it to the warehouse Wi-Fi.</li>
+            <li>Enroll it in Zebra Cloud (one time): on a PC, open <b>Zebra Setup Utilities</b> → select the printer → <i>Open Communication With Printer</i>, paste the line below, click Send, and let the printer reboot:
+              <div style="margin:6px 0; padding:8px; background:var(--bg); border:1px solid var(--border); border-radius:6px; word-break:break-all; font-family:monospace; color:var(--text);">{}{"weblink.ip.conn1.location":"https://savanna-device.zpc.zebra.com/weblink/connect?r=6cc4e1a77bafa54e37c597155d0eb2e1","device.reset":"1"}</div>
+            </li>
+            <li>Find the printer's <b>serial number</b> — on the label, or print a config label (Menu → Print → Settings).</li>
+            <li>Enter a <b>name</b> and that <b>serial</b> in the boxes above, then tap <b>Add printer</b>. It shows up in the printer toggle automatically.</li>
+          </ol>
+          <p class="muted" style="font-size:12px; margin-top:6px;">Every printer uses the same Zebra Cloud account, so you only enter a name + serial here — no API key per printer. Add as many as you like.</p>
+        </details>
         <hr style="border:none; border-top:1px solid var(--border); margin:18px 0;">
 
         <p class="muted" style="font-size:12px; margin:0 0 12px;">Each different part number sent to the printer = <strong>1 cloud call</strong> (the quantity/copies are free). Zebra's free tier is <strong>100 calls/day</strong>; beyond that they bill ~$0.01 each. Set a daily cap to stop printing once a number of calls is reached.</p>
