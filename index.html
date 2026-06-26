@@ -3535,7 +3535,8 @@ function rotationBarHtml(rot) {
   return `<div class="cl-rotbar">
     <div class="cl-rottitle">Closing order — this cycle</div>
     <div class="cl-rotlist">${chips}</div>
-    <div class="cl-rotnote">Reshuffles into a new random order once everyone has had a turn.</div>
+    <div class="cl-rotnote">Reshuffles into a new random order once everyone has had a turn. No one is scheduled within 3 days of their last turn.</div>
+    <button class="ghost" id="clReshuffle" style="margin-top:8px;">🔀 Reshuffle order now</button>
   </div>`;
 }
 
@@ -3545,6 +3546,7 @@ function renderChecklistAdmin() {
   const data = state.checklistAdmin;
   if (!data || !data.runs || !data.runs.length) {
     body.innerHTML = rotationBarHtml(data && data.rotation) || `<div class="cl-banner info">No checklist activity yet.</div>`;
+    wireReshuffleBtn();
     return;
   }
   const toggle = `<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
@@ -3574,7 +3576,18 @@ function renderChecklistAdmin() {
   $("clfName").addEventListener("change", () => { state.checklistFilter.name = $("clfName").value; renderChecklistAdmin(); });
   $("clfDate").addEventListener("change", () => { state.checklistFilter.date = $("clfDate").value; renderChecklistAdmin(); });
   $("clfClear").addEventListener("click", () => { state.checklistFilter = { name: "", date: "" }; renderChecklistAdmin(); });
+  wireReshuffleBtn();
   wireRunCards(body);
+}
+
+function wireReshuffleBtn() {
+  const b = $("clReshuffle");
+  if (!b) return;
+  b.addEventListener("click", () => {
+    if (confirm("Reshuffle the closing order into a new random order? (Today's person stays; no one who did it in the last 3 days will be scheduled too soon.)")) {
+      adminChecklistAction("reshuffleChecklist");
+    }
+  });
 }
 
 async function adminChecklistAction(action, params) {

@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '63';
+const APP_VERSION = '64';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -1337,6 +1337,12 @@ async function ensureTodayRun() {
     if (!eligibleIds.length) { await client.query('ROLLBACK'); return null; }
     const eligSet = new Set(eligibleIds);
 
+    // Who did the checklist in the last 3 days — they shouldn't be reassigned yet,
+    // and a fresh shuffle puts them at the BACK so they aren't scheduled too soon.
+    const { rows: rec } = await client.query(
+      `SELECT DISTINCT employee_id FROM checklist_runs WHERE employee_id IS NOT NULL AND run_date >= (${BIZ_DATE} - 3)`);
+    const recentSet = new Set(rec.map(r => r.employee_id));
+
     // Cycle rotation: shuffle everyone once per cycle, assign down the order, and
     // RESHUFFLE only after everyone eligible has had a turn — so the order varies
     // each cycle instead of repeating the same sequence.
@@ -1353,11 +1359,14 @@ async function ensureTodayRun() {
     }
     let remaining = eligibleIds.filter(id => !goneSet.has(id));
 
-    // New cycle when there's none yet or everyone eligible has gone: reshuffle.
+    // New cycle when there's none yet or everyone eligible has gone: reshuffle into
+    // a new random order, with anyone who went in the last 3 days pushed to the BACK
+    // so they aren't scheduled within 3 days of their last turn.
     if (!cycleStart || remaining.length === 0) {
       const { rows: sh } = await client.query(
         'SELECT id FROM employees WHERE active = true AND checklist_eligible = true ORDER BY random()');
-      order = sh.map(r => r.id);
+      const shuffled = sh.map(r => r.id);
+      order = shuffled.filter(id => !recentSet.has(id)).concat(shuffled.filter(id => recentSet.has(id)));
       cycleStart = today;
       goneSet = new Set();
       remaining = order.slice();
@@ -1368,13 +1377,8 @@ async function ensureTodayRun() {
     const orderedRemaining = remaining.slice().sort((a, b) =>
       (pos.has(a) ? pos.get(a) : 1e9) - (pos.has(b) ? pos.get(b) : 1e9));
 
-    // Don't reassign anyone who did the checklist in the last 3 days (this also
-    // covers back-to-back days, including across a cycle boundary). Skip them for
-    // now — they stay in the cycle and get picked once enough days have passed.
-    // Relax only if everyone left went recently (tiny roster), so a run is still assigned.
-    const { rows: rec } = await client.query(
-      `SELECT DISTINCT employee_id FROM checklist_runs WHERE employee_id IS NOT NULL AND run_date >= (${BIZ_DATE} - 3)`);
-    const recentSet = new Set(rec.map(r => r.employee_id));
+    // Pick the next in order who hasn't done it in the last 3 days; relax only if
+    // everyone left went recently (tiny roster) so a run is still assigned.
     let candidates = orderedRemaining.filter(id => !recentSet.has(id));
     if (!candidates.length) candidates = orderedRemaining;
     const pickId = candidates[0];
@@ -1638,6 +1642,25 @@ async function resetChecklist(who) {
   await pool.query("UPDATE checklist_rotation SET cycle_order = '{}', cycle_start = NULL WHERE id = 1");
   const run = await ensureTodayRun();
   return { ok: true, assignee: run ? await nameForEmpId(run.employee_id) : null };
+}
+
+// Re-randomize the upcoming order WITHOUT changing who already did it (keeps
+// today's assignee). Anyone who did the checklist in the last 3 days is pushed to
+// the back so they aren't scheduled within 3 days. Manager only.
+async function reshuffleChecklist(who) {
+  if (!isManager(who)) return { error: 'Manager only' };
+  const { rows: sh } = await pool.query(
+    'SELECT id FROM employees WHERE active = true AND checklist_eligible = true ORDER BY random()');
+  const ids = sh.map(r => r.id);
+  if (!ids.length) return { error: 'No eligible closers to shuffle.' };
+  const { rows: rec } = await pool.query(
+    `SELECT DISTINCT employee_id FROM checklist_runs WHERE employee_id IS NOT NULL AND run_date >= (${BIZ_DATE} - 3)`);
+  const recentSet = new Set(rec.map(r => r.employee_id));
+  const order = ids.filter(id => !recentSet.has(id)).concat(ids.filter(id => recentSet.has(id)));
+  const today = (await pool.query(`SELECT to_char(${BIZ_DATE}, 'YYYY-MM-DD') AS d`)).rows[0].d;
+  // cycle_start = today so anyone already assigned today counts as gone (stays at the back).
+  await pool.query('UPDATE checklist_rotation SET cycle_order = $1, cycle_start = $2 WHERE id = 1', [order, today]);
+  return { ok: true };
 }
 
 // =================================================================
@@ -2656,6 +2679,7 @@ app.post('/', async (req, res) => {
         case 'updateChecklistTask':  out = await updateChecklistTask(who, body.task); break;
         case 'setChecklistTaskActive': out = await setChecklistTaskActive(who, body.id, body.active); break;
         case 'resetChecklist':       out = await resetChecklist(who); break;
+        case 'reshuffleChecklist':   out = await reshuffleChecklist(who); break;
         case 'reassignChecklistRun': out = await reassignChecklistRun(who, body); break;
         // ----- Box Counter -----
         case 'getBoxSizes':   out = await getBoxSizes(who); break;
