@@ -2839,21 +2839,26 @@ function lpOrderStatus(msg, kind) {
 }
 
 async function lpLookupOrder() {
-  const raw = ($("lpOrderNo").value || "").replace(/[^0-9]/g, "");
+  // Keep the raw value (e.g. "1293640-0001") — the scanner often includes the
+  // ship-group dash; the server takes the first run of digits as the order #.
+  const raw = ($("lpOrderNo").value || "").trim();
   if (!raw) { lpOrderStatus("Scan or type an order number first.", "err"); return; }
+  const seq = (lp.lookupSeq = (lp.lookupSeq || 0) + 1);   // ignore results of superseded lookups
+  lp.order = null;                                        // clear any previous order so Print can't fire on stale data
   $("lpOrderLookup").disabled = true;
   $("lpOrderResult").innerHTML = '<div class="empty">Looking up order ' + escapeHtml(raw) + '…</div>';
   $("lpOrderPrintRow").hidden = true;
   lpOrderStatus("");
   try {
     const r = await apiCall("getOrderLines", { pin: session.pin, order: raw });
+    if (seq !== lp.lookupSeq) return;   // a newer scan/lookup started — drop this stale response
     if (!r || r.error) { $("lpOrderResult").innerHTML = '<div class="empty">' + escapeHtml((r && r.error) || "Couldn't look up that order.") + '</div>'; return; }
-    if (!r.found || !r.lines || !r.lines.length) { $("lpOrderResult").innerHTML = '<div class="empty">No line items found for order ' + escapeHtml(raw) + '.</div>'; return; }
+    if (!r.found || !r.lines || !r.lines.length) { $("lpOrderResult").innerHTML = '<div class="empty">No line items found for order ' + escapeHtml(r && r.order ? r.order : raw) + '.</div>'; return; }
     lp.order = { no: r.order, lines: r.lines, customer: r.customer || "" };
     lpRenderOrder();
   } catch (e) {
-    $("lpOrderResult").innerHTML = '<div class="empty">Couldn\'t reach the server.</div>';
-  } finally { $("lpOrderLookup").disabled = false; }
+    if (seq === lp.lookupSeq) $("lpOrderResult").innerHTML = '<div class="empty">Couldn\'t reach the server.</div>';
+  } finally { if (seq === lp.lookupSeq) $("lpOrderLookup").disabled = false; }
 }
 
 function lpRenderOrder() {
