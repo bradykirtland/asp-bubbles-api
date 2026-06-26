@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '75';
+const APP_VERSION = '76';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -2102,6 +2102,7 @@ async function fetchOrderLines(orderInput) {
 
 async function getOrderLines(who, body) {
   if (!who) return { error: 'Please sign in.' };
+  if (!isManager(who)) return { error: 'Picking is still in the works — managers only for now.' };
   if (!process.env.ERP_MCP_URL) return { error: 'Order lookup is not set up (ERP connection missing).' };
   let res;
   try { res = await fetchOrderLines(body && body.order); }
@@ -2118,6 +2119,7 @@ async function getOrderLines(who, body) {
 
 async function printOrderLabels(who, body) {
   if (!who) return { error: 'Please sign in.' };
+  if (!isManager(who)) return { error: 'Picking is still in the works — managers only for now.' };
   if (!process.env.ERP_MCP_URL) return { error: 'Order lookup is not set up (ERP connection missing).' };
   let res;
   try { res = await fetchOrderLines(body && body.order); }

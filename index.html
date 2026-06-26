@@ -591,6 +591,7 @@
   .lp-bigtile .tile-name { font-size:20px; }
   .lp-bigtile .tile-desc { font-size:14px; margin-top:3px; }
   .lp-back { margin-bottom:10px; }
+  .turn-badge.lp-soon { background:var(--accent-soft); color:var(--accent); }
   .lp-wrap { max-width:520px; margin:0 auto; display:flex; flex-direction:column; gap:16px; }
   .lp-hint { color:var(--muted); font-size:14px; }
   .lp-field { display:flex; flex-direction:column; gap:6px; }
@@ -1150,8 +1151,8 @@
           <button class="app-tile lp-bigtile" id="lpTilePicking">
             <span class="tile-icon">📦</span>
             <span class="tile-body">
-              <span class="tile-name">Picking</span>
-              <span class="tile-desc">Scan an order &amp; print a label for every line item</span>
+              <span class="tile-name">Picking <span class="turn-badge lp-soon" id="lpPickingSoon" hidden>In the works</span></span>
+              <span class="tile-desc" id="lpPickingDesc">Scan an order &amp; print a label for every line item</span>
             </span>
             <span class="tile-arrow">›</span>
           </button>
@@ -2558,7 +2559,7 @@ function initLabelPrinter() {
   lpRenderBatch();
   lpRenderPreview();
   $("lpReprint").hidden = !lp.last;
-  $("lpTileActivity").hidden = !(session && session.role === "manager");
+  lpSetManagerUi(!!(session && session.role === "manager"));
   lpShowMode("home");
   lpDetectPrinter();
   lpLoadPrinters();
@@ -2669,9 +2670,8 @@ function lpShowPrinterStatus(s) {
     if (s.bridgeToken) { $("lpToken").textContent = s.bridgeToken; row.hidden = false; }
     else { row.hidden = true; }
   }
-  // The Activity view is manager-only (bridgeToken is only returned to managers).
-  const mgr = !!s.bridgeToken;
-  const act = $("lpTileActivity"); if (act) act.hidden = !mgr;
+  // Picking + Activity are manager-only (bridgeToken is only returned to managers).
+  lpSetManagerUi(!!s.bridgeToken);
 }
 
 function lpSetStatus(msg, kind) {
@@ -2817,7 +2817,19 @@ async function lpTestPrint() {
 // The Label Printer opens on a landing with two big tiles — Receiving (scan a
 // part → print its label) and Picking (scan an order → a label per line) — each
 // opening its own screen with a Back button. Activity is manager-only.
+// Picking + Print activity are manager-only for now; employees see Picking
+// disabled with an "in the works" note.
+function lpSetManagerUi(isMgr) {
+  const act = $("lpTileActivity"); if (act) act.hidden = !isMgr;
+  const pick = $("lpTilePicking"); if (pick) { pick.disabled = !isMgr; pick.classList.toggle("disabled", !isMgr); }
+  const soon = $("lpPickingSoon"); if (soon) soon.hidden = isMgr;
+  const desc = $("lpPickingDesc"); if (desc) desc.textContent = isMgr
+    ? "Scan an order & print a label for every line item"
+    : "Still in the works — coming soon";
+}
+
 function lpShowMode(mode) {
+  if (mode === "picking" && !(session && session.role === "manager")) mode = "home";  // managers only for now
   lp.mode = mode;
   $("lpHomeView").hidden = mode !== "home";
   $("lpPrintView").hidden = mode !== "receiving";
