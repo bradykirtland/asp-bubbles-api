@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '64';
+const APP_VERSION = '65';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -1522,8 +1522,14 @@ async function getChecklistAdmin(who) {
   await ensureTodayRun();
   // Active people the manager can reassign a day to (anyone active — even if
   // they're not normally in the rotation, e.g. covering for someone who's out).
+  // lastRun + recent let the UI warn before assigning someone who did it within 3 days.
   const { rows: employees } = await pool.query(
-    'SELECT id, name FROM employees WHERE active = true ORDER BY name');
+    `SELECT e.id, e.name,
+            to_char(MAX(r.run_date), 'YYYY-MM-DD') AS "lastRun",
+            COALESCE(MAX(r.run_date) >= (${BIZ_DATE} - 3), false) AS recent
+       FROM employees e LEFT JOIN checklist_runs r ON r.employee_id = e.id
+      WHERE e.active = true
+      GROUP BY e.id, e.name ORDER BY e.name`);
   return { today: await todayStr(), runs: await runsWithItems(21), employees, rotation: await rotationView() };
 }
 
