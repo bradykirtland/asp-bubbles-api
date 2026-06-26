@@ -391,14 +391,12 @@
   }
   .navbtn .navicon { font-size: 18px; line-height: 1; }
   .navbtn.active { color: var(--accent); font-weight: 600; }
-  /* Blue indicator bar across the top of the active tab. */
+  /* Full-width blue indicator bar across the top of the active tab. */
   .navbtn.active::before {
     content: "";
     position: absolute;
-    top: 0; left: 50%; transform: translateX(-50%);
-    width: 54px; max-width: 70%; height: 3px;
+    top: 0; left: 0; right: 0; height: 3px;
     background: var(--accent);
-    border-radius: 0 0 3px 3px;
   }
 
   /* Reward cards */
@@ -688,7 +686,8 @@
   .bc-flag.out { background:var(--danger-soft); color:var(--danger); }
   .bc-field { display:flex; flex-direction:column; gap:3px; align-items:center; }
   .bc-field label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  .bc-savebar { position:sticky; bottom:0; background:linear-gradient(180deg, rgba(247,247,245,0), var(--bg) 35%); padding:14px 0 6px; display:flex; gap:10px; align-items:center; }
+  /* Sits just above the Box Counter bottom nav (≈58px tall) so Save stays reachable while scrolling. */
+  .bc-savebar { position:sticky; bottom:calc(58px + env(safe-area-inset-bottom)); background:linear-gradient(180deg, rgba(247,247,245,0), var(--bg) 35%); padding:14px 0 6px; display:flex; gap:10px; align-items:center; }
   .bc-savebar #bcCountName { flex:1; min-width:0; padding:13px 12px; font-size:15px; border:1px solid var(--border); border-radius:10px; font-family:inherit; }
   .bc-savebar button { flex:0 0 auto; padding:14px 20px; font-size:16px; font-weight:700; }
   .bc-savebar button:disabled { background:#d4d4d0; border-color:#d4d4d0; color:#8a8a85; cursor:not-allowed; }
@@ -1068,10 +1067,6 @@
 
   <!-- ===== Box Counter app ===== -->
   <div id="boxcounterScreen" hidden>
-    <div class="bc-tabs">
-      <button class="bc-tab active" data-bctab="count">Count</button>
-      <button class="bc-tab" data-bctab="sizes">Sizes &amp; inventory</button>
-    </div>
     <div class="bc-controls">
       <div class="bc-search">
         <span>Find</span>
@@ -1224,6 +1219,15 @@
   </button>
   <button class="navbtn" data-lptab="activity" id="lpNavActivity" hidden>
     <span class="navicon">🧾</span><span>Activity</span>
+  </button>
+</nav>
+
+<nav class="bottomnav" id="bcNav" hidden>
+  <button class="navbtn active" data-bctab="count">
+    <span class="navicon">📋</span><span>Count</span>
+  </button>
+  <button class="navbtn" data-bctab="sizes">
+    <span class="navicon">📦</span><span>Sizes &amp; inventory</span>
   </button>
 </nav>
 
@@ -2210,6 +2214,7 @@ function showScreen(name) {
   $("labelScreen").hidden = name !== "label";
   document.querySelector(".bottomnav").hidden = name !== "bubbles";
   if (name !== "label") $("lpNav").hidden = true;   // shown for managers on the label screen (see lpShowPrinterStatus)
+  $("bcNav").hidden = name !== "boxcounter";          // Box Counter's own bottom tab bar
   // The home screen has its own centered hero, so hide the duplicate top header there.
   document.querySelector("header.top").hidden = name === "home";
   $("homeBtn").hidden = name === "home";
@@ -2951,7 +2956,7 @@ function switchBoxTab(tab) {
   state.boxTab = tab;
   $("bcCountView").hidden = tab !== "count";
   $("bcSizesView").hidden = tab !== "sizes";
-  document.querySelectorAll(".bc-tab").forEach(b => b.classList.toggle("active", b.dataset.bctab === tab));
+  document.querySelectorAll("[data-bctab]").forEach(b => b.classList.toggle("active", b.dataset.bctab === tab));
   renderBox();
 }
 
@@ -4696,7 +4701,7 @@ $("lpActClear").addEventListener("click", () => {
   lpRenderActivity();
 });
 $("eomLogPeriod").addEventListener("change", () => { state.eomLogPeriod = $("eomLogPeriod").value; renderEomLog(); });
-document.querySelectorAll(".bc-tab").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
+document.querySelectorAll("[data-bctab]").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);
 document.querySelectorAll("[data-bcsearch]").forEach(inp => inp.addEventListener("input", () => {
   const v = inp.value.replace(/[^0-9]/g, "");
