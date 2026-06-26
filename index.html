@@ -387,9 +387,19 @@
     font-size: 11px;
     color: var(--muted);
     border-radius: 0;
+    position: relative;
   }
   .navbtn .navicon { font-size: 18px; line-height: 1; }
   .navbtn.active { color: var(--accent); font-weight: 600; }
+  /* Blue indicator bar across the top of the active tab. */
+  .navbtn.active::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 50%; transform: translateX(-50%);
+    width: 54px; max-width: 70%; height: 3px;
+    background: var(--accent);
+    border-radius: 0 0 3px 3px;
+  }
 
   /* Reward cards */
   .reward-list { display: grid; gap: 10px; }
