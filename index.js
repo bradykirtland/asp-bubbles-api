@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '70';
+const APP_VERSION = '71';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -181,6 +181,16 @@ async function ensureSchema() {
   }
   await pool.query(`ALTER TABLE box_sizes ADD COLUMN IF NOT EXISTS disregarded BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE box_sizes ADD COLUMN IF NOT EXISTS last_counted_by TEXT`);
+
+  // Box Counter activity log — who entered/changed box info and when.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS box_activity (
+      id        SERIAL PRIMARY KEY,
+      ts        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      person    TEXT NOT NULL DEFAULT '',
+      action    TEXT NOT NULL,
+      detail    TEXT NOT NULL DEFAULT ''
+    )`);
 
   // Employee of the Month votes. period = award month 'YYYY-MM' (the month that
   // just ended); one vote per employee per period (UNIQUE).
@@ -2292,6 +2302,25 @@ async function getBoxSizes(who) {
   return { boxSizes: rows, boxMeta: await boxCountMeta() };
 }
 
+// Record a Box Counter activity entry (who did what). Never throws into the caller.
+async function logBoxActivity(person, action, detail) {
+  try {
+    await pool.query(
+      'INSERT INTO box_activity (person, action, detail) VALUES ($1, $2, $3)',
+      [String(person || '').slice(0, 80), String(action || '').slice(0, 32), String(detail || '').slice(0, 300)]);
+  } catch (e) { console.warn('box_activity log failed:', e && e.message); }
+}
+
+// Recent Box Counter activity (newest first), for the in-app Activity tab.
+async function getBoxActivity(who) {
+  if (!who) return { error: 'Not authorized' };
+  const { rows } = await pool.query(
+    `SELECT person, action, detail, to_char(ts AT TIME ZONE 'America/Los_Angeles', 'YYYY-MM-DD') AS day,
+            to_char(ts AT TIME ZONE 'America/Los_Angeles', 'HH12:MI AM') AS time
+       FROM box_activity ORDER BY ts DESC LIMIT 200`);
+  return { boxActivity: rows };
+}
+
 // Save a Friday count: each provided count becomes the new current inventory.
 // Email the manager about box sizes now at/below their low threshold. No-op
 // unless email is configured (RESEND_API_KEY + MANAGER_EMAIL). Only sizes that
@@ -2335,7 +2364,10 @@ async function saveBoxCount(who, body) {
       [q, by, id]);
     saved++;
   }
-  if (saved) { try { await emailLowStock(); } catch (e) { console.warn('low-stock email failed:', e && e.message); } }
+  if (saved) {
+    await logBoxActivity(by, 'count', `Counted ${saved} box size${saved === 1 ? '' : 's'}`);
+    try { await emailLowStock(); } catch (e) { console.warn('low-stock email failed:', e && e.message); }
+  }
   const data = await getBoxSizes(who);
   data.saved = saved;
   return data;
@@ -2346,16 +2378,21 @@ async function updateBoxSize(who, body) {
   if (!who) return { error: 'Not authorized' };
   const id = parseInt(body && body.id, 10);
   if (!Number.isFinite(id)) return { error: 'Bad id.' };
+  const { rows: szRows } = await pool.query('SELECT size FROM box_sizes WHERE id = $1', [id]);
+  const size = szRows.length ? szRows[0].size : ('#' + id);
+  const person = (who && who.name) || '';
   if (body && 'lowThreshold' in body) {
     let t = body.lowThreshold;
     t = (t === null || t === '') ? null : parseInt(t, 10);
     if (t !== null && (!Number.isFinite(t) || t < 0)) return { error: 'Threshold must be 0 or more.' };
     await pool.query('UPDATE box_sizes SET low_threshold = $1 WHERE id = $2', [t, id]);
+    await logBoxActivity(person, 'threshold', `${size}: low alert set to ${t === null ? 'none' : t}`);
   }
   if (body && 'quantity' in body) {
     const q = parseInt(body.quantity, 10);
     if (!Number.isFinite(q) || q < 0) return { error: 'Quantity must be 0 or more.' };
     await pool.query('UPDATE box_sizes SET quantity = $1 WHERE id = $2', [q, id]);
+    await logBoxActivity(person, 'qty', `${size}: quantity set to ${q}`);
   }
   return await getBoxSizes(who);
 }
@@ -2689,6 +2726,7 @@ app.post('/', async (req, res) => {
         case 'reassignChecklistRun': out = await reassignChecklistRun(who, body); break;
         // ----- Box Counter -----
         case 'getBoxSizes':   out = await getBoxSizes(who); break;
+        case 'getBoxActivity': out = await getBoxActivity(who); break;
         case 'saveBoxCount':  out = await saveBoxCount(who, body); break;
         case 'updateBoxSize': out = await updateBoxSize(who, body); break;
         case 'setBoxSizeActive': out = await setBoxSizeActive(who, body.id, body.active); break;

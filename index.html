@@ -688,7 +688,13 @@
   .bc-field label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
   /* Sits just above the Box Counter bottom nav (≈58px tall) so Save stays reachable while scrolling. */
   .bc-savebar { position:sticky; bottom:calc(58px + env(safe-area-inset-bottom)); background:linear-gradient(180deg, rgba(247,247,245,0), var(--bg) 35%); padding:14px 0 6px; display:flex; gap:10px; align-items:center; }
-  .bc-savebar #bcCountName { flex:1; min-width:0; padding:13px 12px; font-size:15px; border:1px solid var(--border); border-radius:10px; font-family:inherit; }
+  .bc-savebar .bc-saveas { flex:1; min-width:0; color:var(--muted); font-size:13px; }
+  .bc-actrow { display:flex; align-items:baseline; gap:10px; padding:10px 2px; border-bottom:1px solid var(--border); }
+  .bc-actrow .who { font-weight:600; white-space:nowrap; }
+  .bc-actrow .what { flex:1; min-width:0; }
+  .bc-actrow .when { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .bc-actday { margin:16px 0 4px; font-weight:700; font-size:13px; color:var(--muted); }
+  .bc-actday:first-child { margin-top:4px; }
   .bc-savebar button { flex:0 0 auto; padding:14px 20px; font-size:16px; font-weight:700; }
   .bc-savebar button:disabled { background:#d4d4d0; border-color:#d4d4d0; color:#8a8a85; cursor:not-allowed; }
   .bc-flag.dis { background:#f0efeb; color:var(--muted); }
@@ -1067,7 +1073,7 @@
 
   <!-- ===== Box Counter app ===== -->
   <div id="boxcounterScreen" hidden>
-    <div class="bc-controls">
+    <div class="bc-controls" id="bcControls">
       <div class="bc-search">
         <span>Find</span>
         <input inputmode="numeric" pattern="[0-9]*" data-bcsearch="l" placeholder="L" aria-label="Length">
@@ -1087,13 +1093,17 @@
       <div class="bc-hint" id="bcCountHint">Count every box size, then tap Save. Saving updates the stock to your new count, and flags any size at or below its low alert. Tap ✕ on a size that doesn't need counting.</div>
       <div id="bcCountList"></div>
       <div class="bc-savebar" id="bcSaveBar">
-        <input type="text" id="bcCountName" maxlength="80" placeholder="Your name (who counted)" autocomplete="name">
+        <div class="bc-saveas" id="bcSaveAs"></div>
         <button class="primary" id="bcSaveBtn" disabled>Save count</button>
       </div>
     </div>
     <div id="bcSizesView" hidden>
       <div class="bc-hint">Current inventory and the optional low-stock alert per size. Set a number in “Low ≤” to flag that size when stock drops to it; leave blank for no alert.</div>
       <div id="bcSizesList"></div>
+    </div>
+    <div id="bcActivityView" hidden>
+      <div class="bc-hint">Who entered or changed box info — newest first.</div>
+      <div id="bcActivityList"></div>
     </div>
   </div>
 
@@ -1223,7 +1233,10 @@
     <span class="navicon">📋</span><span>Count</span>
   </button>
   <button class="navbtn" data-bctab="sizes">
-    <span class="navicon">📦</span><span>Sizes &amp; inventory</span>
+    <span class="navicon">📦</span><span>Sizes</span>
+  </button>
+  <button class="navbtn" data-bctab="activity">
+    <span class="navicon">🧾</span><span>Activity</span>
   </button>
 </nav>
 
@@ -2192,7 +2205,9 @@ function switchView(view) {
   ["balances", "rewards", "activity", "earn"].forEach(v => {
     $("view-" + v).hidden = (v !== view);
   });
-  document.querySelectorAll(".navbtn").forEach(b => {
+  // Only the Bubbles nav buttons carry data-view; scope to them so this never
+  // touches the Box Counter / EOM / Label nav buttons (they manage their own active state).
+  document.querySelectorAll("[data-view]").forEach(b => {
     b.classList.toggle("active", b.dataset.view === view);
   });
   render();
@@ -2236,7 +2251,7 @@ function showScreen(name) {
   $("appTitle").textContent = t[0];
   $("appSub").textContent = t[1];
   if (name === "checklist") loadChecklist();
-  if (name === "boxcounter") loadBoxSizes();
+  if (name === "boxcounter") { switchBoxTab("count"); loadBoxSizes(); }
   if (name === "eom") { switchEomTab("vote"); loadEom(); }
   if (name === "label") initLabelPrinter();
   if (name === "home") updateNotifyUI();
@@ -2962,12 +2977,61 @@ function switchBoxTab(tab) {
   state.boxTab = tab;
   $("bcCountView").hidden = tab !== "count";
   $("bcSizesView").hidden = tab !== "sizes";
+  $("bcActivityView").hidden = tab !== "activity";
+  $("bcControls").hidden = tab === "activity";   // the size search/sort doesn't apply to the log
   document.querySelectorAll("[data-bctab]").forEach(b => b.classList.toggle("active", b.dataset.bctab === tab));
-  renderBox();
+  if (tab === "activity") loadBoxActivity(); else renderBox();
 }
 
 function renderBox() {
-  if (state.boxTab === "sizes") renderBoxSizes(); else renderBoxCount();
+  if (state.boxTab === "sizes") renderBoxSizes();
+  else if (state.boxTab === "activity") renderBoxActivity();
+  else renderBoxCount();
+}
+
+async function loadBoxActivity() {
+  const el = $("bcActivityList");
+  el.innerHTML = `<div class="empty"><div>Loading…</div></div>`;
+  try {
+    const data = await apiCall("getBoxActivity", { pin: session.pin });
+    if (data.error) { el.innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    state.boxActivity = data.boxActivity || [];
+    renderBoxActivity();
+  } catch (err) {
+    el.innerHTML = `<div class="empty">Couldn't load (${escapeHtml(err && err.message ? err.message : String(err))}).</div>`;
+  }
+}
+
+function renderBoxActivity() {
+  const el = $("bcActivityList");
+  const rows = state.boxActivity || [];
+  if (!rows.length) { el.innerHTML = `<div class="empty"><div>No activity yet.</div></div>`; return; }
+  let html = "", lastDay = "";
+  for (const r of rows) {
+    if (r.day !== lastDay) { html += `<div class="bc-actday">${escapeHtml(fmtRunDate(r.day))}</div>`; lastDay = r.day; }
+    html += `<div class="bc-actrow"><span class="who">${escapeHtml(r.person || "Someone")}</span>`
+          + `<span class="what">${escapeHtml(r.detail || r.action || "")}</span>`
+          + `<span class="when">${escapeHtml(r.time || "")}</span></div>`;
+  }
+  el.innerHTML = html;
+}
+
+// Pressing Enter in a count / qty / Low box jumps straight down to the same
+// field on the next row (fast hardware-key data entry on the scanners).
+function bcEnterToNext(e) {
+  if (e.key !== "Enter") return;
+  const inp = e.target;
+  if (!inp || !inp.classList || !inp.classList.contains("bc-num")) return;
+  e.preventDefault();
+  const attr = inp.hasAttribute("data-bccount") ? "data-bccount"
+             : inp.hasAttribute("data-bcqty") ? "data-bcqty"
+             : inp.hasAttribute("data-bcthresh") ? "data-bcthresh" : null;
+  const container = inp.closest("#bcCountList, #bcSizesList");
+  if (!attr || !container) { inp.blur(); return; }
+  const peers = Array.prototype.slice.call(container.querySelectorAll("[" + attr + "]"));
+  const next = peers[peers.indexOf(inp) + 1];
+  if (next) { next.focus(); if (next.select) next.select(); }
+  else inp.blur();   // last row — blur so the value commits
 }
 
 function bcEnteredCount() {
@@ -3001,6 +3065,8 @@ function renderBoxCount() {
   }
   if (hint) hint.hidden = false;
   if (bar) bar.hidden = false;
+  const saveAs = $("bcSaveAs");
+  if (saveAs) saveAs.textContent = session && session.name ? ("Saving as " + session.name) : "";
   if (!state.boxSizes.length) { el.innerHTML = `<div class="empty"><h3>No box sizes</h3></div>`; bcUpdateSaveBtn(); return; }
   const list = bcVisibleSizes(false);
   if (!list.length) { el.innerHTML = `<div class="empty"><div>No sizes to count (matching your search).</div></div>`; bcUpdateSaveBtn(); return; }
@@ -3064,10 +3130,9 @@ async function saveBoxCountNow() {
     .filter(k => state.boxCountLocal[k] !== "" && state.boxCountLocal[k] !== undefined)
     .map(k => ({ id: parseInt(k, 10), counted: parseInt(state.boxCountLocal[k], 10) }));
   if (!counts.length) return;
-  const countedBy = ($("bcCountName").value || "").trim();
   const btn = $("bcSaveBtn"); btn.disabled = true; btn.textContent = "Saving…";
   try {
-    const res = await apiCall("saveBoxCount", { pin: session.pin, counts, countedBy });
+    const res = await apiCall("saveBoxCount", { pin: session.pin, counts });
     if (res.error) { alert(res.error); renderBoxCount(); return; }
     state.boxSizes = res.boxSizes || state.boxSizes;
     if (res.boxMeta) state.boxMeta = res.boxMeta;
@@ -4633,7 +4698,7 @@ $("teamCancel").addEventListener("click", () => { $("teamConfirm").hidden = true
 $("teamClose").addEventListener("click", () => { $("teamAward").hidden = true; state.pendingTeam = null; });
 
 // Bottom-nav tab switching.
-document.querySelectorAll(".navbtn").forEach(btn => {
+document.querySelectorAll("[data-view]").forEach(btn => {
   btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
 
@@ -4709,6 +4774,10 @@ $("lpActClear").addEventListener("click", () => {
 $("eomLogPeriod").addEventListener("change", () => { state.eomLogPeriod = $("eomLogPeriod").value; renderEomLog(); });
 document.querySelectorAll("[data-bctab]").forEach(b => b.addEventListener("click", () => switchBoxTab(b.dataset.bctab)));
 $("bcSaveBtn").addEventListener("click", saveBoxCountNow);
+// Enter in a count/qty/Low box advances to the next row (listeners on the
+// containers persist across re-renders of their contents).
+$("bcCountList").addEventListener("keydown", bcEnterToNext);
+$("bcSizesList").addEventListener("keydown", bcEnterToNext);
 document.querySelectorAll("[data-bcsearch]").forEach(inp => inp.addEventListener("input", () => {
   const v = inp.value.replace(/[^0-9]/g, "");
   if (v !== inp.value) inp.value = v;
