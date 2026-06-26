@@ -3436,9 +3436,21 @@ async function submitChecklistNow() {
 function reassignHtml(r) {
   const emps = (state.checklistAdmin && state.checklistAdmin.employees) || [];
   if (!emps.length) return "";
+  const rot = (state.checklistAdmin && state.checklistAdmin.rotation) || [];
+  const byName = new Map(emps.map(e => [e.name, e]));
+  const used = new Set();
+  const ordered = [];
+  const add = (e) => { if (e && !used.has(e.id)) { used.add(e.id); ordered.push(e); } };
+  // 1) the person doing it now, on top
+  add(emps.find(e => e.name === r.assignee));
+  // 2) then who's scheduled next — the upcoming rotation order (not yet gone / not today)
+  rot.forEach(p => { if (!p.done && !p.today) add(byName.get(p.name)); });
+  // 3) then everyone else (already went this cycle, or not in the rotation), A–Z
+  emps.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach(add);
+
   const known = emps.some(e => e.name === r.assignee);
-  const opts = (known ? "" : `<option value="" selected>${escapeHtml(r.assignee || "Unassigned")}</option>`)
-    + emps.map(e => `<option value="${e.id}"${e.name === r.assignee ? " selected" : ""}>${escapeHtml(e.name)}</option>`).join("");
+  const head = known ? "" : `<option value="" selected>${escapeHtml(r.assignee || "Unassigned")}</option>`;
+  const opts = head + ordered.map(e => `<option value="${e.id}"${e.name === r.assignee ? " selected" : ""}>${escapeHtml(e.name)}</option>`).join("");
   return `<div class="cl-reassign">
       <label for="clra-${r.id}">Doing it:</label>
       <select id="clra-${r.id}" data-reassign-run="${r.id}">${opts}</select>
