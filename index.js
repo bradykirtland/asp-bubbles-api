@@ -2075,20 +2075,29 @@ async function erpFetchItems(query, columns) {
 // positive. A picker scans/keys the order number (any non-digits are stripped);
 // we try the open (negative) form first, then the invoiced (positive) form.
 async function fetchOrderLines(orderInput) {
-  const digits = String(orderInput == null ? '' : orderInput).replace(/[^0-9]/g, '');
-  if (!digits) return { error: 'Enter or scan an order number.' };
-  const n = parseInt(digits, 10);
+  // Pick tickets show the base order number, often with a ship-group/release
+  // suffix ("1293640-0001") or a prefix — take the FIRST run of digits.
+  const m = String(orderInput == null ? '' : orderInput).match(/\d+/);
+  if (!m) return { error: 'Enter or scan an order number.' };
+  const n = parseInt(m[0], 10);
   if (!Number.isFinite(n) || n <= 0) return { error: 'That does not look like an order number.' };
-  const cols = 'order,line,item,descr,location,q_ord';
-  const q = (ord) => `FOR EACH oe_line NO-LOCK WHERE oe_line.company_oe = 'ASPL' AND oe_line.order = ${ord} AND oe_line.item <> ''`;
-  let signed = -n;
-  let recs = await erpReadRecords(q(-n), cols, 250);          // open order (negative) first
-  if (!recs.length) { signed = n; recs = await erpReadRecords(q(n), cols, 250); }  // else invoiced (positive)
-  const lines = recs
-    .map(r => ({ line: Number(r.line) || 0, item: String(r.item || '').trim(), descr: rejoinDescr(r.descr), qty: Number(r.q_ord) || 0, location: String(r.location || '').trim() }))
-    .filter(r => r.item)
-    .sort((a, b) => a.line - b.line);
-  return { order: n, signedOrder: signed, lines };
+  // Current orders carry a positive order number, older back-orders negative —
+  // match either, but only OPEN lines (`opn`) so a long-closed order with the
+  // same number isn't picked up. ERP-ONE stores duplicate line rows (different
+  // `rec_seq`); de-dupe by line number so each line prints one sticker.
+  const recs = await erpReadRecords(
+    `FOR EACH oe_line NO-LOCK WHERE oe_line.company_oe = 'ASPL' AND (oe_line.order = ${n} OR oe_line.order = ${-n}) AND oe_line.opn = YES AND oe_line.item <> ''`,
+    'order,line,item,descr,location,q_ord', 400);
+  const byLine = new Map();
+  for (const r of recs) {
+    const ln = Number(r.line) || 0;
+    if (byLine.has(ln)) continue;   // first row per line wins (drops rec_seq duplicates)
+    const item = String(r.item || '').trim();
+    if (!item) continue;
+    byLine.set(ln, { line: ln, item, descr: rejoinDescr(r.descr), qty: Number(r.q_ord) || 0, location: String(r.location || '').trim() });
+  }
+  const lines = Array.from(byLine.values()).sort((a, b) => a.line - b.line);
+  return { order: n, lines };
 }
 
 async function getOrderLines(who, body) {
@@ -2101,7 +2110,7 @@ async function getOrderLines(who, body) {
   if (!res.lines.length) return { order: res.order, found: false, lines: [] };
   let customer = '';
   try {
-    const h = await erpReadRecords(`FOR EACH oe_head NO-LOCK WHERE oe_head.company_oe = 'ASPL' AND oe_head.order = ${res.signedOrder}`, 'order,name', 1);
+    const h = await erpReadRecords(`FOR EACH oe_head NO-LOCK WHERE oe_head.company_oe = 'ASPL' AND (oe_head.order = ${res.order} OR oe_head.order = ${-res.order}) AND oe_head.opn = YES`, 'order,name', 1);
     if (h.length) customer = String(h[0].name || '').trim();
   } catch (_) { /* customer name is a nice-to-have */ }
   return { order: res.order, found: true, customer, lines: res.lines };
