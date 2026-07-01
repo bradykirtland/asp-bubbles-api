@@ -624,7 +624,9 @@
   .lp-vfy { background:var(--accent-soft); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
   .lp-vfy.loading { color:var(--muted); font-weight:600; }
   .lp-vfy.ok { background:var(--good-soft); border-color:var(--good); }
-  .lp-vfy-img { display:block; width:100%; max-width:220px; max-height:200px; object-fit:contain; margin:0 auto 10px; border-radius:8px; background:#fff; border:1px solid var(--border); }
+  .lp-vfy-img { display:block; width:100%; max-width:220px; max-height:200px; object-fit:contain; margin:0 auto 4px; border-radius:8px; background:#fff; border:1px solid var(--border); }
+  .lp-vfy-photonote { font-size:11px; color:var(--muted); text-align:center; margin:0 0 10px; }
+  .lp-linkbtn { background:none; border:none; padding:0; margin-left:4px; color:var(--accent); font:inherit; font-size:11px; text-decoration:underline; cursor:pointer; }
   .lp-vfy-q { font-size:13px; font-weight:600; color:var(--muted); margin-bottom:4px; }
   .lp-vfy-code { font-size:24px; font-weight:800; letter-spacing:-0.01em; }
   .lp-vfy-desc { font-size:15px; line-height:1.35; margin-top:4px; }
@@ -2521,7 +2523,7 @@ async function refreshCurrent() {
    (action "enqueuePrint"); a small "print bridge" on the warehouse PC polls the
    server and sends the ZPL to the printer over the LAN. Here we just enqueue and
    show whether that bridge/PC is currently online. */
-const lp = { last: null, batch: [], actJobs: [], actSearch: "", actName: "", actDate: "", desc: "", descTimer: null, order: null, confirmed: false, descLoading: false };
+const lp = { last: null, batch: [], actJobs: [], actSearch: "", actName: "", actDate: "", desc: "", descTimer: null, order: null, confirmed: false, descLoading: false, photoHidden: false };
 
 function initLabelPrinter() {
   lpSetStatus("");
@@ -2565,13 +2567,14 @@ function lpLookupDesc(code) {
   clearTimeout(lp.descTimer);
   const c = lpCleanCode(code);
   lp.confirmed = false;                 // a new/changed part must be re-confirmed
+  lp.photoHidden = false;
   if (!c) { lp.desc = ""; lp.descLoading = false; lpRenderConfirm(); return; }
   lp.descLoading = true; lpRenderConfirm();
   lp.descTimer = setTimeout(async () => {
-    let desc = "";
-    try { const r = await apiCall("lookupPart", { pin: session.pin, code: c }); desc = (r && r.description) || ""; } catch (_) {}
+    let desc = "", hidden = false;
+    try { const r = await apiCall("lookupPart", { pin: session.pin, code: c }); desc = (r && r.description) || ""; hidden = !!(r && r.photoHidden); } catch (_) {}
     if (lpCleanCode($("lpCode").value) !== c) return;   // code changed while waiting
-    lp.desc = desc; lp.descLoading = false;
+    lp.desc = desc; lp.photoHidden = hidden; lp.descLoading = false;
     lpRenderConfirm();
     lpUpdatePrintLabel();
   }, 250);
@@ -2587,24 +2590,46 @@ function lpRenderConfirm() {
     return;
   }
   const descHtml = lp.desc ? escapeHtml(lp.desc) : '<i>No description on file — double-check this is the right part.</i>';
-  // The product photo from the website (api.actionspaparts.com), by part number.
-  // Hidden automatically if that part has no photo online (404).
-  const imgHtml = '<img class="lp-vfy-img" alt="" src="https://api.actionspaparts.com/Content/item/' + encodeURIComponent(c) + '.webp">';
+  const isMgr = !!(session && session.role === "manager");
+  // The website photo is a REFERENCE — D1's description is the source of truth.
+  // Hidden if the part has no photo online (404) OR a manager flagged it wrong.
+  let photoBlock = "";
+  if (!lp.photoHidden) {
+    photoBlock = '<div class="lp-vfy-photo" id="lpVfyPhoto">' +
+      '<img class="lp-vfy-img" alt="" src="https://api.actionspaparts.com/Content/item/' + encodeURIComponent(c) + '.webp">' +
+      '<div class="lp-vfy-photonote">Reference photo from the website — trust the description below' +
+      (isMgr ? ' <button type="button" class="lp-linkbtn" id="lpHidePhotoBtn">🚫 Hide (wrong photo)</button>' : '') +
+      '</div></div>';
+  } else if (isMgr) {
+    photoBlock = '<div class="lp-vfy-photonote">Photo hidden for this part. <button type="button" class="lp-linkbtn" id="lpShowPhotoBtn">Show photo</button></div>';
+  }
   if (lp.confirmed) {
-    el.innerHTML = '<div class="lp-vfy ok">' + imgHtml + '<div class="lp-vfy-code">✓ ' + escapeHtml(c) + '</div>' +
+    el.innerHTML = '<div class="lp-vfy ok">' + photoBlock + '<div class="lp-vfy-code">✓ ' + escapeHtml(c) + '</div>' +
       '<div class="lp-vfy-desc">' + descHtml + '</div>' +
       '<div class="lp-vfy-note">Confirmed — set the quantity and print.</div></div>';
   } else {
     el.innerHTML = '<div class="lp-vfy"><div class="lp-vfy-q">Is this the item in your hand?</div>' +
-      imgHtml +
+      photoBlock +
       '<div class="lp-vfy-code">' + escapeHtml(c) + '</div>' +
       '<div class="lp-vfy-desc">' + descHtml + '</div>' +
       '<button type="button" class="primary lp-vfy-btn" id="lpConfirmBtn">✓ Yes — this is the item</button></div>';
     const btn = $("lpConfirmBtn"); if (btn) btn.addEventListener("click", lpConfirmItem);
   }
-  // No photo for this part → hide the broken image so the card stays clean.
+  // No photo for this part → hide the whole photo block so no orphan caption/button shows.
   const img = el.querySelector(".lp-vfy-img");
-  if (img) img.addEventListener("error", function () { img.style.display = "none"; });
+  if (img) img.addEventListener("error", function () { const box = $("lpVfyPhoto"); if (box) box.style.display = "none"; });
+  const hideBtn = $("lpHidePhotoBtn"); if (hideBtn) hideBtn.addEventListener("click", function () { lpSetPhotoHidden(c, true); });
+  const showBtn = $("lpShowPhotoBtn"); if (showBtn) showBtn.addEventListener("click", function () { lpSetPhotoHidden(c, false); });
+}
+
+// Manager: hide/restore the website photo for a part (persists per part number).
+async function lpSetPhotoHidden(code, hidden) {
+  try {
+    const r = await apiCall("setPhotoHidden", { pin: session.pin, code: code, hidden: hidden });
+    if (r && r.error) { alert(r.error); return; }
+    lp.photoHidden = hidden;
+    lpRenderConfirm();
+  } catch (e) { alert("Couldn't reach the server."); }
 }
 
 // Picker confirms the shown part matches the physical item → printing unlocks.

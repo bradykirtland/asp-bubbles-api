@@ -31,7 +31,7 @@ const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 // Front-end version. Bump on every front-end change (together with sw.js CACHE)
 // so open apps detect the new version and show the "Update" banner.
-const APP_VERSION = '83';
+const APP_VERSION = '84';
 const PORT          = process.env.PORT || 3000;
 
 if (!DATABASE_URL) {
@@ -384,6 +384,14 @@ async function ensureSchema() {
       count       INTEGER NOT NULL DEFAULT 0
     )`);
   await pool.query(`INSERT INTO part_meta (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+  // Parts whose website photo is WRONG (doesn't match the D1 part) — a manager
+  // hides them from the confirm card. Stored lowercased for case-insensitive match.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS photo_hidden (
+      code   TEXT PRIMARY KEY,
+      hidden_by TEXT,
+      ts     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
   // Weekly auto-refresh: a Railway-side worker fetches this URL every Saturday
   // 2:37 AM (Pacific) and reloads the descriptions. last_auto guards against
   // double-runs / restarts. (Railway can't reach the on-prem ERP, so it pulls a
@@ -2199,7 +2207,29 @@ async function getPartImportInfo(who) {
 // Preview helper: look up one description (for the on-screen label preview).
 async function lookupPart(who, code) {
   if (!who) return { error: 'Not authorized' };
-  return { description: await lookupDescription(code) };
+  const c = String(code || '').trim();
+  let photoHidden = false;
+  if (c) {
+    const { rows } = await pool.query('SELECT 1 FROM photo_hidden WHERE code = lower($1) LIMIT 1', [c]);
+    photoHidden = rows.length > 0;
+  }
+  return { description: await lookupDescription(code), photoHidden };
+}
+
+// Manager: hide (or restore) the website photo for a part whose photo is wrong.
+async function setPhotoHidden(who, body) {
+  if (!isManager(who)) return { error: 'Only a manager can hide photos.' };
+  const c = String((body && body.code) || '').trim();
+  if (!c) return { error: 'No part number.' };
+  const hide = !!(body && body.hidden);
+  if (hide) {
+    await pool.query(
+      'INSERT INTO photo_hidden (code, hidden_by) VALUES (lower($1), $2) ON CONFLICT (code) DO UPDATE SET hidden_by = $2, ts = now()',
+      [c, who.name || null]);
+  } else {
+    await pool.query('DELETE FROM photo_hidden WHERE code = lower($1)', [c]);
+  }
+  return { ok: true, code: c, photoHidden: hide };
 }
 
 // ----- Cloud printing (Zebra SendFileToPrinter) -----
@@ -2871,6 +2901,7 @@ app.post('/', async (req, res) => {
         case 'setPartSourceUrl':   out = await setPartSourceUrl(who, body.url); break;
         case 'refreshPartsNow':    out = await refreshPartsNow(who); break;
         case 'lookupPart':         out = await lookupPart(who, body.code); break;
+        case 'setPhotoHidden':     out = await setPhotoHidden(who, body); break;
         // ----- Push notifications -----
         case 'savePushSubscription':   out = await savePushSubscription(who, body); break;
         case 'removePushSubscription': out = await removePushSubscription(who, body); break;
