@@ -656,6 +656,8 @@
   .lp-act { padding:8px 2px; border-bottom:1px solid var(--border); }
   .lp-act-main { font-size:14px; }
   .lp-act-sub { font-size:12px; color:var(--muted); margin-top:1px; }
+  .lp-who { color:var(--accent); font-weight:700; }
+  .lp-daywho { display:block; font-weight:400; font-size:12px; color:var(--muted); margin-top:3px; }
   .lp-ok { color:var(--good); font-weight:600; }
   .lp-err2 { color:var(--danger); font-weight:600; }
   .lp-muted { color:var(--muted); }
@@ -2911,7 +2913,7 @@ function lpActRow(j) {
   const cls = j.status === "printed" ? "lp-ok" : (j.status === "error" ? "lp-err2" : "lp-muted");
   return '<div class="lp-act"><div class="lp-act-main"><b>' + escapeHtml(j.code) + '</b> × ' + j.qty +
     ' <span class="' + cls + '">' + st + '</span></div><div class="lp-act-sub">' +
-    escapeHtml(j.who) + ' · ' + escapeHtml(j.at || '') + (j.error ? ' · ' + escapeHtml(j.error) : '') + '</div></div>';
+    'by <b class="lp-who">' + escapeHtml(j.who || '—') + '</b> · ' + escapeHtml(j.at || '') + (j.error ? ' · ' + escapeHtml(j.error) : '') + '</div></div>';
 }
 
 function lpDayLabel(d) {
@@ -2924,7 +2926,7 @@ function lpRenderActivity() {
   const box = $("lpActivityBody");
   // True per-day totals (ignore filters) — "calls" = billable cloud API calls vs the 100/day free limit.
   const dayTotals = {};
-  (lp.actJobs || []).forEach(j => { const d = j.day || "—"; if (!dayTotals[d]) dayTotals[d] = { calls: 0, labels: 0 }; dayTotals[d].calls++; dayTotals[d].labels += (j.qty || 0); });
+  (lp.actJobs || []).forEach(j => { const d = j.day || "—"; if (!dayTotals[d]) dayTotals[d] = { calls: 0, labels: 0, by: {} }; dayTotals[d].calls++; dayTotals[d].labels += (j.qty || 0); const w = j.who || "—"; dayTotals[d].by[w] = (dayTotals[d].by[w] || 0) + 1; });
   let jobs = (lp.actJobs || []).slice();              // already id-desc from the server
   const q = (lp.actSearch || "").trim().toLowerCase();
   if (q) jobs = jobs.filter(j => (String(j.code || "").toLowerCase().indexOf(q) >= 0) || (String(j.who || "").toLowerCase().indexOf(q) >= 0));
@@ -2957,13 +2959,18 @@ function lpRenderActivity() {
       const grp = byBatch[b];
       if (grp.length > 1) {
         const labels = grp.reduce((s, j) => s + (j.qty || 0), 0);
-        const head = '🧾 Printed together · ' + escapeHtml(grp[0].who) + ' · ' + escapeHtml(grp[0].at || '') + ' · ' + labels + ' labels';
+        const head = '🧾 Printed together · by <b class="lp-who">' + escapeHtml(grp[0].who || '—') + '</b> · ' + escapeHtml(grp[0].at || '') + ' · ' + labels + ' labels';
         return '<div class="lp-chain"><div class="lp-chain-head">' + head + '</div>' + grp.map(lpActRow).join("") + '</div>';
       }
       return lpActRow(grp[0]);
     }).join("");
-    return '<details class="lp-day"' + (anyFilter ? " open" : "") + '><summary>' + lpDayLabel(d) +
-      ' · <span class="' + cls + '">' + tot.calls + '/100 calls</span> · ' + tot.labels + ' labels</summary>' +
+    // Per-person breakdown for the day (most calls first) — shown even collapsed.
+    const by = tot.by || {};
+    const who = Object.keys(by).sort(function (a, b) { return by[b] - by[a]; })
+      .map(function (p) { return '<b class="lp-who">' + escapeHtml(p) + '</b> ' + by[p]; }).join(' · ');
+    return '<details class="lp-day"' + ((anyFilter || di === 0) ? " open" : "") + '><summary>' + lpDayLabel(d) +
+      ' · <span class="' + cls + '">' + tot.calls + '/100 calls</span> · ' + tot.labels + ' labels' +
+      (who ? '<span class="lp-daywho">👤 ' + who + '</span>' : '') + '</summary>' +
       '<div class="lp-day-body">' + body + '</div></details>';
   }).join("");
 }
