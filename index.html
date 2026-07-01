@@ -632,9 +632,13 @@
   .lp-status.err { background:var(--danger-soft); color:var(--danger); }
   .lp-status.warn { background:#fef3c7; color:var(--warn); }
   .lp-ordhead { font-weight:700; margin:10px 0 6px; }
-  .lp-ordrow { display:flex; align-items:flex-start; gap:10px; padding:9px 2px; border-bottom:1px solid var(--border); }
+  .lp-ordprog { font-size:13px; font-weight:600; color:var(--muted); margin:2px 0 6px; }
+  .lp-ordrow { display:flex; align-items:flex-start; gap:10px; padding:11px 2px; border-bottom:1px solid var(--border); cursor:pointer; }
+  .lp-ordcheck { width:24px; height:24px; flex:0 0 auto; margin:0; accent-color:var(--accent); }
+  .lp-ordrow.done { opacity:.5; }
+  .lp-ordrow.done .lp-ordmain b { text-decoration:line-through; }
   .lp-ordmain { flex:1; min-width:0; }
-  .lp-ordsub { color:var(--muted); font-size:13px; margin-top:1px; }
+  .lp-ordsub { display:block; color:var(--muted); font-size:13px; margin-top:1px; }
   .lp-ordqty { color:var(--accent); font-weight:600; font-size:13px; }
   .lp-ordbin { flex:0 0 auto; align-self:center; font-size:12px; font-weight:600; color:var(--muted); background:var(--accent-soft); border-radius:6px; padding:2px 7px; white-space:nowrap; }
   #lpPrinter.lp-on { color:var(--good); }
@@ -1151,8 +1155,8 @@
           <button class="app-tile lp-bigtile" id="lpTilePicking">
             <span class="tile-icon">📦</span>
             <span class="tile-body">
-              <span class="tile-name">Picking <span class="turn-badge lp-soon" id="lpPickingSoon" hidden>In the works</span></span>
-              <span class="tile-desc" id="lpPickingDesc">Scan an order &amp; print a label for every line item</span>
+              <span class="tile-name">Picking</span>
+              <span class="tile-desc">Scan an order &amp; print a label for every line item</span>
             </span>
             <span class="tile-arrow">›</span>
           </button>
@@ -2817,19 +2821,12 @@ async function lpTestPrint() {
 // The Label Printer opens on a landing with two big tiles — Receiving (scan a
 // part → print its label) and Picking (scan an order → a label per line) — each
 // opening its own screen with a Back button. Activity is manager-only.
-// Picking + Print activity are manager-only for now; employees see Picking
-// disabled with an "in the works" note.
+// Print activity is manager-only; Receiving + Picking are open to everyone.
 function lpSetManagerUi(isMgr) {
   const act = $("lpTileActivity"); if (act) act.hidden = !isMgr;
-  const pick = $("lpTilePicking"); if (pick) { pick.disabled = !isMgr; pick.classList.toggle("disabled", !isMgr); }
-  const soon = $("lpPickingSoon"); if (soon) soon.hidden = isMgr;
-  const desc = $("lpPickingDesc"); if (desc) desc.textContent = isMgr
-    ? "Scan an order & print a label for every line item"
-    : "Still in the works — coming soon";
 }
 
 function lpShowMode(mode) {
-  if (mode === "picking" && !(session && session.role === "manager")) mode = "home";  // managers only for now
   lp.mode = mode;
   $("lpHomeView").hidden = mode !== "home";
   $("lpPrintView").hidden = mode !== "receiving";
@@ -2873,19 +2870,40 @@ async function lpLookupOrder() {
   } finally { if (seq === lp.lookupSeq) $("lpOrderLookup").disabled = false; }
 }
 
+function lpOrderProg(done, n) {
+  if (!n) return "";
+  return done >= n ? "✓ All " + n + " item" + (n === 1 ? "" : "s") + " checked off" : "Checked off " + done + " of " + n;
+}
+
 function lpRenderOrder() {
   const o = lp.order || { lines: [] };
   const n = o.lines.length;
+  const done = o.lines.filter(function (l) { return l.done; }).length;
   const head = '<div class="lp-ordhead">Order #' + escapeHtml(String(o.no)) +
     (o.customer ? ' — ' + escapeHtml(o.customer) : '') +
-    ' · ' + n + ' line' + (n === 1 ? '' : 's') + '</div>';
-  const rows = o.lines.map(function (l) {
-    return '<div class="lp-ordrow"><div class="lp-ordmain"><b>' + escapeHtml(l.item) + '</b>' +
+    ' · ' + n + ' line' + (n === 1 ? '' : 's') + '</div>' +
+    '<div class="lp-ordprog" id="lpOrderProg">' + lpOrderProg(done, n) + '</div>' +
+    '<div class="lp-hint" style="margin-bottom:8px;">Tap a line to check it off as you pick it — handy for items that don\'t get a sticker.</div>';
+  // Each line is a big tap target (a <label> wrapping its checkbox).
+  const rows = o.lines.map(function (l, i) {
+    return '<label class="lp-ordrow' + (l.done ? ' done' : '') + '">' +
+      '<input type="checkbox" class="lp-ordcheck" data-idx="' + i + '"' + (l.done ? ' checked' : '') + '>' +
+      '<span class="lp-ordmain"><b>' + escapeHtml(l.item) + '</b>' +
       (l.qty > 1 ? ' <span class="lp-ordqty">×' + l.qty + '</span>' : '') +
-      '<div class="lp-ordsub">' + escapeHtml(l.descr || '') + '</div></div>' +
-      (l.location ? '<span class="lp-ordbin">' + escapeHtml(l.location) + '</span>' : '') + '</div>';
+      '<span class="lp-ordsub">' + escapeHtml(l.descr || '') + '</span></span>' +
+      (l.location ? '<span class="lp-ordbin">' + escapeHtml(l.location) + '</span>' : '') +
+      '</label>';
   }).join("");
   $("lpOrderResult").innerHTML = head + rows;
+  $("lpOrderResult").querySelectorAll(".lp-ordcheck").forEach(function (cb) {
+    cb.addEventListener("change", function () {
+      const idx = parseInt(cb.dataset.idx, 10);
+      if (o.lines[idx]) o.lines[idx].done = cb.checked;
+      const row = cb.closest(".lp-ordrow"); if (row) row.classList.toggle("done", cb.checked);
+      const d = o.lines.filter(function (l) { return l.done; }).length;
+      const pe = $("lpOrderProg"); if (pe) pe.textContent = lpOrderProg(d, o.lines.length);
+    });
+  });
   $("lpOrderPrint").textContent = "🖨️ Print all labels (" + n + ")";
   $("lpOrderPrintRow").hidden = false;
   $("lpOrderClear").hidden = false;
