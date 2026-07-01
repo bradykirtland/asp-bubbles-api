@@ -1142,29 +1142,7 @@
   <!-- ===== Label Printer app ===== -->
   <div id="labelScreen" hidden>
     <div class="lp-wrap">
-      <div id="lpHomeView">
-        <div class="lp-home-tiles">
-          <button class="app-tile lp-bigtile" id="lpTileReceiving">
-            <span class="tile-icon">📥</span>
-            <span class="tile-body">
-              <span class="tile-name">Receiving</span>
-              <span class="tile-desc">Scan a part &amp; print its barcode label</span>
-            </span>
-            <span class="tile-arrow">›</span>
-          </button>
-          <button class="app-tile lp-bigtile" id="lpTilePicking">
-            <span class="tile-icon">📦</span>
-            <span class="tile-body">
-              <span class="tile-name">Picking</span>
-              <span class="tile-desc">Scan an order &amp; print a label for every line item</span>
-            </span>
-            <span class="tile-arrow">›</span>
-          </button>
-        </div>
-        <button class="ghost" id="lpTileActivity" hidden style="display:block; width:100%; max-width:520px; margin:14px auto 0;">🧾 Print activity</button>
-      </div>
-      <div id="lpPrintView" hidden>
-        <button class="ghost lp-back" data-lpback>← Back</button>
+      <div id="lpPrintView">
       <div class="lp-hint">Scan a part barcode (or type the number), set the quantity, then tap Print. Labels print on the Zebra ZQ620.</div>
       <div class="lp-printerbar" id="lpPrinterBar" hidden>
         <span class="lp-lab">Printer</span>
@@ -1232,25 +1210,7 @@
         </div>
       </details>
       </div><!-- /lpPrintView -->
-      <div id="lpOrderView" hidden>
-        <button class="ghost lp-back" data-lpback>← Back</button>
-        <div class="lp-hint">Scan or type an order number to print a label for every line item on it.</div>
-        <label class="lp-field">
-          <span class="lp-lab">Order number</span>
-          <input id="lpOrderNo" type="text" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Scan order… or tap to type">
-        </label>
-        <div class="lp-actions">
-          <button class="ghost" id="lpOrderClear" hidden>Clear</button>
-          <button class="primary" id="lpOrderLookup">Look up order</button>
-        </div>
-        <div id="lpOrderResult"></div>
-        <div class="lp-actions" id="lpOrderPrintRow" hidden>
-          <button class="primary" id="lpOrderPrint" style="width:100%;">🖨️ Print all labels</button>
-        </div>
-        <div class="lp-status" id="lpOrderStatus" hidden></div>
-      </div><!-- /lpOrderView -->
       <div id="lpActivityView" hidden>
-        <button class="ghost lp-back" data-lpback>← Back</button>
         <h2 class="section" style="font-size:16px; margin-top:0;">Print activity</h2>
         <div class="filterbar lp-actbar">
           <input id="lpActSearch" type="text" autocomplete="off" placeholder="Search part #">
@@ -1285,9 +1245,6 @@
 <nav class="bottomnav" id="lpNav" hidden>
   <button class="navbtn active" data-lptab="print">
     <span class="navicon">🏷️</span><span>Print</span>
-  </button>
-  <button class="navbtn" data-lptab="order">
-    <span class="navicon">📦</span><span>Order</span>
   </button>
   <button class="navbtn" data-lptab="activity" id="lpNavActivity" hidden>
     <span class="navicon">🧾</span><span>Activity</span>
@@ -2563,8 +2520,8 @@ function initLabelPrinter() {
   lpRenderBatch();
   lpRenderPreview();
   $("lpReprint").hidden = !lp.last;
-  lpSetManagerUi(!!(session && session.role === "manager"));
-  lpShowMode("home");
+  setTimeout(() => { try { $("lpCode").focus(); } catch (_) {} }, 60);
+  switchLpTab("print");
   lpDetectPrinter();
   lpLoadPrinters();
   lpLoadCloudSettings();
@@ -2674,8 +2631,10 @@ function lpShowPrinterStatus(s) {
     if (s.bridgeToken) { $("lpToken").textContent = s.bridgeToken; row.hidden = false; }
     else { row.hidden = true; }
   }
-  // Picking + Activity are manager-only (bridgeToken is only returned to managers).
-  lpSetManagerUi(!!s.bridgeToken);
+  // The bottom nav + Activity tab are manager-only (bridgeToken is only returned to managers).
+  const mgr = !!s.bridgeToken;
+  const nav = $("lpNav"); if (nav) nav.hidden = !mgr;
+  const na = $("lpNavActivity"); if (na) na.hidden = !mgr;
 }
 
 function lpSetStatus(msg, kind) {
@@ -2818,24 +2777,13 @@ async function lpTestPrint() {
   lpSetStatus(r.ok ? "Test label queued ✓" : (r.error || "Test failed"), r.ok ? "ok" : "err");
 }
 
-// The Label Printer opens on a landing with two big tiles — Receiving (scan a
-// part → print its label) and Picking (scan an order → a label per line) — each
-// opening its own screen with a Back button. Activity is manager-only.
-// Print activity is manager-only; Receiving + Picking are open to everyone.
-function lpSetManagerUi(isMgr) {
-  const act = $("lpTileActivity"); if (act) act.hidden = !isMgr;
-}
-
-function lpShowMode(mode) {
-  lp.mode = mode;
-  $("lpHomeView").hidden = mode !== "home";
-  $("lpPrintView").hidden = mode !== "receiving";
-  $("lpOrderView").hidden = mode !== "picking";
-  $("lpActivityView").hidden = mode !== "activity";
-  const nav = $("lpNav"); if (nav) nav.hidden = true;   // retired in favor of the landing
-  if (mode === "receiving") { try { $("lpCode").focus(); } catch (_) {} }
-  if (mode === "picking") { try { $("lpOrderNo").focus(); } catch (_) {} }
-  if (mode === "activity") lpLoadActivity();
+// Label Printer = scan a part, set qty, print. A manager-only bottom nav
+// switches between the Print screen and the Print Activity log.
+function switchLpTab(name) {
+  document.querySelectorAll("#lpNav .navbtn").forEach(b => b.classList.toggle("active", b.dataset.lptab === name));
+  $("lpPrintView").hidden = name !== "print";
+  $("lpActivityView").hidden = name !== "activity";
+  if (name === "activity") lpLoadActivity();
 }
 
 // ----- Order labels: scan an order, print a label for each line item -----
@@ -4945,10 +4893,6 @@ $("lpCancel").addEventListener("click", lpCancelCurrent);
 $("lpClear").addEventListener("click", lpClearAll);
 $("lpPrint").addEventListener("click", lpPrintBatch);
 $("lpReprint").addEventListener("click", lpReprintLast);
-$("lpOrderLookup").addEventListener("click", lpLookupOrder);
-$("lpOrderPrint").addEventListener("click", lpPrintOrder);
-$("lpOrderClear").addEventListener("click", lpClearOrder);
-$("lpOrderNo").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); lpLookupOrder(); } });
 $("lpBatchList").addEventListener("click", (e) => { const b = e.target.closest(".lp-bx"); if (b) lpRemoveBatch(parseInt(b.dataset.bi, 10)); });
 $("lpDupMinus").addEventListener("click", () => { $("lpDupQty").value = Math.max(1, lpDupQtyVal() - 1); });
 $("lpDupPlus").addEventListener("click", () => { $("lpDupQty").value = Math.min(999, lpDupQtyVal() + 1); });
@@ -4967,10 +4911,7 @@ $("lpCopyToken").addEventListener("click", () => {
 });
 $("lpcSave").addEventListener("click", lpSaveCloudSettings);
 $("lpUseRefresh").addEventListener("click", lpLoadUsage);
-$("lpTileReceiving").addEventListener("click", () => lpShowMode("receiving"));
-$("lpTilePicking").addEventListener("click", () => lpShowMode("picking"));
-$("lpTileActivity").addEventListener("click", () => lpShowMode("activity"));
-document.querySelectorAll("[data-lpback]").forEach(b => b.addEventListener("click", () => lpShowMode("home")));
+document.querySelectorAll("#lpNav .navbtn").forEach(b => b.addEventListener("click", () => switchLpTab(b.dataset.lptab)));
 $("lpActSearch").addEventListener("input", () => { lp.actSearch = $("lpActSearch").value; lpRenderActivity(); });
 $("lpActName").addEventListener("change", () => { lp.actName = $("lpActName").value; lpRenderActivity(); });
 $("lpActDate").addEventListener("change", () => { lp.actDate = $("lpActDate").value; lpRenderActivity(); });
