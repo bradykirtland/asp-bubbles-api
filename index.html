@@ -624,6 +624,7 @@
   .lp-vfy { background:var(--accent-soft); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
   .lp-vfy.loading { color:var(--muted); font-weight:600; }
   .lp-vfy.ok { background:var(--good-soft); border-color:var(--good); }
+  .lp-vfy-img { display:block; width:100%; max-width:220px; max-height:200px; object-fit:contain; margin:0 auto 10px; border-radius:8px; background:#fff; border:1px solid var(--border); }
   .lp-vfy-q { font-size:13px; font-weight:600; color:var(--muted); margin-bottom:4px; }
   .lp-vfy-code { font-size:24px; font-weight:800; letter-spacing:-0.01em; }
   .lp-vfy-desc { font-size:15px; line-height:1.35; margin-top:4px; }
@@ -2586,17 +2587,24 @@ function lpRenderConfirm() {
     return;
   }
   const descHtml = lp.desc ? escapeHtml(lp.desc) : '<i>No description on file — double-check this is the right part.</i>';
+  // The product photo from the website (api.actionspaparts.com), by part number.
+  // Hidden automatically if that part has no photo online (404).
+  const imgHtml = '<img class="lp-vfy-img" alt="" src="https://api.actionspaparts.com/Content/item/' + encodeURIComponent(c) + '.webp">';
   if (lp.confirmed) {
-    el.innerHTML = '<div class="lp-vfy ok"><div class="lp-vfy-code">✓ ' + escapeHtml(c) + '</div>' +
+    el.innerHTML = '<div class="lp-vfy ok">' + imgHtml + '<div class="lp-vfy-code">✓ ' + escapeHtml(c) + '</div>' +
       '<div class="lp-vfy-desc">' + descHtml + '</div>' +
       '<div class="lp-vfy-note">Confirmed — set the quantity and print.</div></div>';
   } else {
     el.innerHTML = '<div class="lp-vfy"><div class="lp-vfy-q">Is this the item in your hand?</div>' +
+      imgHtml +
       '<div class="lp-vfy-code">' + escapeHtml(c) + '</div>' +
       '<div class="lp-vfy-desc">' + descHtml + '</div>' +
       '<button type="button" class="primary lp-vfy-btn" id="lpConfirmBtn">✓ Yes — this is the item</button></div>';
     const btn = $("lpConfirmBtn"); if (btn) btn.addEventListener("click", lpConfirmItem);
   }
+  // No photo for this part → hide the broken image so the card stays clean.
+  const img = el.querySelector(".lp-vfy-img");
+  if (img) img.addEventListener("error", function () { img.style.display = "none"; });
 }
 
 // Picker confirms the shown part matches the physical item → printing unlocks.
